@@ -33,7 +33,7 @@ fn enumerate() -> Result<Vec<std::result::Result<pico_sdk::prelude::EnumeratedDe
 
 
 struct PicoScopeApp {
-    num_points_text: u32,
+    num_points: u32,
     updates_per_second: f32,
     last_update_start: f64,
     last_update_count: usize,
@@ -42,7 +42,7 @@ struct PicoScopeApp {
 impl Default for PicoScopeApp {
     fn default() -> Self {
         PicoScopeApp {
-            num_points_text: 100,
+            num_points: 100,
             last_update_count: 0,
             last_update_start: 0.0,
             updates_per_second: 0.0,
@@ -71,11 +71,18 @@ impl epi::App for PicoScopeApp {
                 self.last_update_count = 0;
             }
             ui.heading("Picoscope App");
-            ui.add(egui::Label::new(format!("updates per second: {}", self.updates_per_second)));
-            ui.add(egui::Slider::new(&mut self.num_points_text, 50..=100000).text("Points"));
+            let num_points = self.num_points;
+            ui.group(|ui| {
+                ui.add(egui::Label::new(format!("updates per second: {}", self.updates_per_second)));
+                ui.add(egui::Slider::new(&mut self.num_points, 50..=100000).text("Points"));
+                ui.add(egui::DragValue::new(&mut self.num_points)
+                    .speed((num_points as f64).max(2.0).log2())
+                    .clamp_range(50..=100000)
+                    .prefix("Points"));
+            });
             let plot = Plot::new("picoscope").legend(Legend::default());
             let markers = Points::new(Values::from_values(
-                (0..(self.num_points_text + self.last_update_count as u32)).map(|i| Value::new(i, ((i as f32) / 50.0).sin())).collect()
+                (0..(self.num_points + self.last_update_count as u32)).map(|i| Value::new(i, ((i as f32) / 50.0).sin())).collect()
             ))
                 .shape(MarkerShape::Circle)
                 ;
