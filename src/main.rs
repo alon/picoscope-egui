@@ -7,6 +7,31 @@ use plot::{
     Values,
 };
 
+use pico_sdk::{
+    download::{cache_resolution, download_drivers_to_cache},
+    enumeration::{DeviceEnumerator, EnumResultHelpers},
+};
+
+fn enumerate() -> Result<Vec<std::result::Result<pico_sdk::prelude::EnumeratedDevice, pico_sdk::prelude::EnumerationError>>, Box<dyn std::error::Error>> {
+    let enumerator = DeviceEnumerator::with_resolution(cache_resolution());
+
+    println!("Enumerating Pico devices...");
+    let results = enumerator.enumerate();
+
+    let missing_drivers = results.missing_drivers();
+
+    if !missing_drivers.is_empty() {
+        println!(
+            "Downloading drivers that failed to load {:?}",
+            &missing_drivers
+        );
+        download_drivers_to_cache(&missing_drivers)?;
+        println!("Downloads complete");
+    }
+    Ok(results)
+}
+
+
 struct PicoScopeApp {
     num_points_text: u32,
     updates_per_second: f32,
@@ -65,5 +90,6 @@ impl epi::App for PicoScopeApp {
 fn main() {
     let app = PicoScopeApp::default();
     let native_options = eframe::NativeOptions::default();
+    println!("pico enumerate: {:?}", enumerate());
     eframe::run_native(Box::new(app), native_options);
 }
