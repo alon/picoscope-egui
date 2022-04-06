@@ -14,12 +14,17 @@ use pico_sdk::{
 };
 use pico_sdk::prelude::*;
 
+use crossbeam_channel::{unbounded, Sender, Receiver};
 
-struct PicoScopeHandler;
+struct PicoScopeHandler {
+    sender: Sender<StreamingEvent>,
+}
 
 impl NewDataHandler for PicoScopeHandler {
     fn handle_event(&self, event: &StreamingEvent) {
         println!("Sample count: {}", event.length);
+        // TODO: can we get rid of this clone?
+        self.sender.send(event.clone()).unwrap();
     }
 }
 
@@ -64,16 +69,19 @@ struct PicoScopeApp {
     last_update_start: f64,
     last_update_count: usize,
     handler: Arc<PicoScopeHandler>,
+    receiver: Receiver<StreamingEvent>
 }
 
 impl Default for PicoScopeApp {
     fn default() -> Self {
+        let (sender, receiver) = unbounded();
         PicoScopeApp {
             num_points: 100,
             last_update_count: 0,
             last_update_start: 0.0,
             updates_per_second: 0.0,
-            handler: Arc::new(PicoScopeHandler { }),
+            receiver,
+            handler: Arc::new(PicoScopeHandler { sender }),
         }
     }
 }
@@ -90,6 +98,15 @@ impl epi::App for PicoScopeApp {
     fn update(&mut self, ctx: &egui::Context, frame: &epi::Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.ctx().request_repaint();
+            // check for new data
+            match self.receiver.recv() {
+                Err(_) => {
+                    // ignore
+                },
+                Ok(data) => {
+                    println!("todo: handle streaming event from scope: {}", data.length);
+                }
+            }
             let now = ui.input().time;
             self.last_update_count += 1;
             let dt = now - self.last_update_start;
