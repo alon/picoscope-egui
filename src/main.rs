@@ -32,16 +32,33 @@ impl NewDataHandler for PicoScopeHandler {
 
 impl PicoScopeApp {
 
-    fn connect_to_scope(&mut self) -> Result<Vec<std::result::Result<pico_sdk::prelude::EnumeratedDevice, pico_sdk::prelude::EnumerationError>>, Box<dyn std::error::Error>> {
+    fn connect_to_scope(&mut self) {
         let simulate = std::env::var("PICOSCOPE_SIMULATE").unwrap_or("0".into()) == "1";
         if simulate {
-            panic!("unhandled yet")
+            self.connect_to_simulation()
         } else {
             self.connect_to_scope_real()
         }
     }
 
-    fn connect_to_scope_real(&mut self) -> Result<Vec<std::result::Result<pico_sdk::prelude::EnumeratedDevice, pico_sdk::prelude::EnumerationError>>, Box<dyn std::error::Error>> {
+    fn connect_to_simulation(&mut self) {
+        /*
+        let mut handler = self.handler.clone();
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep_ms(10);
+                let event = StreamingEvent {
+                    length: 1,
+                    samples_per_second: 1_000_000,
+                    channels: 
+                };
+                handler(event);
+            }
+        });
+        */
+    }
+
+    fn connect_to_scope_real(&mut self) {
         let enumerator = DeviceEnumerator::with_resolution(cache_resolution());
 
         println!("Enumerating Pico devices...");
@@ -54,20 +71,32 @@ impl PicoScopeApp {
                 "Downloading drivers that failed to load {:?}",
                 &missing_drivers
             );
-            download_drivers_to_cache(&missing_drivers)?;
+            match download_drivers_to_cache(&missing_drivers) {
+                Ok(_) => { },
+                Err(_) => {
+                    println!("error downloading drivers");
+                    return;
+                }
+            }
             println!("Downloads complete");
             let enum_device = results.into_iter().flatten().next().expect("No device found");
-            let device = enum_device.open()?;
+            let device = match enum_device.open() {
+                Ok(device) => device,
+                Err(err) => {
+                    println!("error: {:?}", err);
+                    return;
+                }
+            };
             let stream_device = device.into_streaming_device();
             stream_device.enable_channel(PicoChannel::A, PicoRange::X1_PROBE_2V, PicoCoupling::DC);
             stream_device.enable_channel(PicoChannel::B, PicoRange::X1_PROBE_1V, PicoCoupling::AC);
             // When handler goes out of scope, the subscription is dropped
 
             stream_device.new_data.subscribe(self.handler.clone());
-            stream_device.start(1_000)?;
+            stream_device.start(1_000).unwrap();
         }
         let results = enumerator.enumerate();
-        Ok(results)
+        println!("pico enumerate: {:?}", results);
     }
 
 }
@@ -142,13 +171,19 @@ impl epi::App for PicoScopeApp {
                     .prefix("Points"));
             });
             let plot = Plot::new("picoscope").legend(Legend::default());
-            let markers = Points::new(Values::from_values(
-                (0..(self.num_points + self.last_update_count as u32)).map(|i| Value::new(i, ((i as f32) / 50.0).sin())).collect()
-            ))
-                .shape(MarkerShape::Circle)
-                ;
-            plot.show(ui, |plot_ui| {
-                plot_ui.points(markers)
+                plot.show(ui, |plot_ui| {
+                // TODO: For now just show the first channel
+                if self.channels.len() > 0 {
+                    // TODO: pass num_points to the simulation channel
+                    // so it can be used to do stuff (amp / sin / cos)
+                    let markers = Points::new(Values::from_values(
+                        (0..(self.num_points + self.last_update_count as u32)).map(
+                            |i| Value::new(i, ((i as f32) / 50.0).sin())).collect()
+                    ))
+                        .shape(MarkerShape::Circle)
+                        ;
+                    plot_ui.points(markers)
+                }
             }).response
         });
         frame.set_window_size(ctx.used_size());
@@ -158,6 +193,6 @@ impl epi::App for PicoScopeApp {
 fn main() {
     let mut app = PicoScopeApp::default();
     let native_options = eframe::NativeOptions::default();
-    println!("pico enumerate: {:?}", app.connect_to_scope());
+    app.connect_to_scope();
     eframe::run_native(Box::new(app), native_options);
 }
