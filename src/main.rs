@@ -116,6 +116,7 @@ struct PicoScopeApp {
 
 struct Channel {
     name: String,
+    multiplier: f64,
     samples: Vec<f64>
 }
 
@@ -154,15 +155,13 @@ impl epi::App for PicoScopeApp {
                     // ignore
                 },
                 Ok(data) => {
-                    self.channels = data.channels.iter().map(|(pico_channel, v)| {
+                    self.channels = data.channels.iter().map(|(pico_channel, c)| {
                         Channel {
                             name: format!("{}", pico_channel),
-                            samples: v.samples.iter().map(|x| *x as f64).collect()
+                            multiplier: c.multiplier,
+                            samples: c.samples.iter().map(|x| *x as f64).collect()
                         }
                     }).collect();
-                    for (channel, data) in data.channels {
-                        println!("channel {:?}: x{} #{}", channel, data.multiplier, data.samples.len());
-                    };
                 }
             }
             let now = ui.input().time;
@@ -178,6 +177,12 @@ impl epi::App for PicoScopeApp {
             ui.horizontal(|ui| {
                 ui.group(|ui| {
                     ui.add(egui::Label::new(format!("channels: {}", self.channels.len())));
+                    ui.add(egui::Label::new({
+                        let temp: Vec<String> = self.channels
+                            .iter()
+                            .map(|c| format!("{}-x{}", c.name, c.multiplier)).collect();
+                        temp.join(" ")
+                    }));
                     let mut sampling_rate = self.sampling_rate;
                     egui::ComboBox::from_label("Sampling rate")
                         .selected_text(format!("{:?}", sampling_rate))
