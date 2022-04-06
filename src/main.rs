@@ -97,7 +97,8 @@ impl PicoScopeApp {
         // When handler goes out of scope, the subscription is dropped
 
         stream_device.new_data.subscribe(self.handler.clone());
-        stream_device.start(1_000_000).unwrap();
+        stream_device.start(1_00_000).unwrap();
+        self.stream_device = Some(stream_device);
     }
 
 }
