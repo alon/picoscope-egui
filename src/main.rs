@@ -33,6 +33,15 @@ impl NewDataHandler for PicoScopeHandler {
 impl PicoScopeApp {
 
     fn connect_to_scope(&mut self) -> Result<Vec<std::result::Result<pico_sdk::prelude::EnumeratedDevice, pico_sdk::prelude::EnumerationError>>, Box<dyn std::error::Error>> {
+        let simulate = std::env::var("PICOSCOPE_SIMULATE").unwrap_or("0".into()) == "1";
+        if simulate {
+            panic!("unhandled yet")
+        } else {
+            self.connect_to_scope_real()
+        }
+    }
+
+    fn connect_to_scope_real(&mut self) -> Result<Vec<std::result::Result<pico_sdk::prelude::EnumeratedDevice, pico_sdk::prelude::EnumerationError>>, Box<dyn std::error::Error>> {
         let enumerator = DeviceEnumerator::with_resolution(cache_resolution());
 
         println!("Enumerating Pico devices...");
@@ -69,7 +78,13 @@ struct PicoScopeApp {
     last_update_start: f64,
     last_update_count: usize,
     handler: Arc<PicoScopeHandler>,
-    receiver: Receiver<StreamingEvent>
+    receiver: Receiver<StreamingEvent>,
+    channels: Vec<Channel>,
+}
+
+struct Channel {
+    name: String,
+    data: Vec<f64>
 }
 
 impl Default for PicoScopeApp {
@@ -82,6 +97,7 @@ impl Default for PicoScopeApp {
             updates_per_second: 0.0,
             receiver,
             handler: Arc::new(PicoScopeHandler { sender }),
+            channels: vec![]
         }
     }
 }
@@ -99,7 +115,7 @@ impl epi::App for PicoScopeApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.ctx().request_repaint();
             // check for new data
-            match self.receiver.recv() {
+            match self.receiver.try_recv() {
                 Err(_) => {
                     // ignore
                 },
