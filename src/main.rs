@@ -22,7 +22,6 @@ struct PicoScopeHandler {
 
 impl NewDataHandler for PicoScopeHandler {
     fn handle_event(&self, event: &StreamingEvent) {
-        println!("Sample count: {}", event.length);
         // TODO: can we get rid of this clone?
         self.sender.send(event.clone()).unwrap();
     }
@@ -117,7 +116,7 @@ struct PicoScopeApp {
 
 struct Channel {
     name: String,
-    data: Vec<f64>
+    samples: Vec<f64>
 }
 
 impl Default for PicoScopeApp {
@@ -155,6 +154,12 @@ impl epi::App for PicoScopeApp {
                     // ignore
                 },
                 Ok(data) => {
+                    self.channels = data.channels.iter().map(|(pico_channel, v)| {
+                        Channel {
+                            name: format!("{}", pico_channel),
+                            samples: v.samples.iter().map(|x| *x as f64).collect()
+                        }
+                    }).collect();
                     for (channel, data) in data.channels {
                         println!("channel {:?}: x{} #{}", channel, data.multiplier, data.samples.len());
                     };
@@ -209,7 +214,15 @@ impl epi::App for PicoScopeApp {
                         ;
                     plot_ui.points(markers)
                 } else {
-
+                    for channel in &self.channels {
+                        let markers = Points::new(Values::from_values(
+                            channel.samples.iter().enumerate().map(|(i, v)| Value {
+                                x: i as f64,
+                                y: *v,
+                            }).collect()))
+                                .shape(MarkerShape::Circle);
+                        plot_ui.points(markers)    
+                    }
                 }
             }).response
         });
