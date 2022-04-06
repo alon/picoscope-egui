@@ -153,7 +153,9 @@ impl epi::App for PicoScopeApp {
                     // ignore
                 },
                 Ok(data) => {
-                    println!("todo: handle streaming event from scope: {}", data.length);
+                    for (channel, data) in data.channels {
+                        println!("channel {:?}: x{} #{}", channel, data.multiplier, data.samples.len());
+                    };
                 }
             }
             let now = ui.input().time;
