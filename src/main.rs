@@ -97,8 +97,7 @@ impl PicoScopeApp {
         // When handler goes out of scope, the subscription is dropped
 
         stream_device.new_data.subscribe(self.handler.clone());
-        stream_device.start(1_000).unwrap();
-        self.stream_device = Some(stream_device);
+        stream_device.start(1_000_000).unwrap();
     }
 
 }
@@ -112,6 +111,7 @@ struct PicoScopeApp {
     receiver: Receiver<StreamingEvent>,
     channels: Vec<Channel>,
     stream_device: Option<PicoStreamingDevice>,
+    sampling_rate: usize,
 }
 
 struct Channel {
@@ -131,6 +131,7 @@ impl Default for PicoScopeApp {
             handler: Arc::new(PicoScopeHandler { sender }),
             channels: vec![],
             stream_device: None,
+            sampling_rate: 0,
         }
     }
 }
@@ -169,7 +170,21 @@ impl epi::App for PicoScopeApp {
             ui.heading("Picoscope App");
             let num_points = self.num_points;
             ui.horizontal(|ui| {
-                ui.add(egui::Label::new(format!("channels: {}", self.channels.len())));
+                ui.group(|ui| {
+                    ui.add(egui::Label::new(format!("channels: {}", self.channels.len())));
+                    let mut sampling_rate = self.sampling_rate;
+                    egui::ComboBox::from_label("Sampling rate")
+                        .selected_text(format!("{:?}", sampling_rate))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut sampling_rate, 100_000, "0.1 Msps");
+                            ui.selectable_value(&mut sampling_rate, 1_000_000, "1 Msps");
+                            ui.selectable_value(&mut sampling_rate, 2_000_000, "2 Msps");
+                        }
+                    );
+                    if self.sampling_rate != sampling_rate {
+                        println!("todo: change sampling rate to {}", sampling_rate)
+                    }
+                });
                 ui.group(|ui| {
                     ui.add(egui::Label::new(format!("updates per second: {}", self.updates_per_second)));
                     ui.add(egui::Slider::new(&mut self.num_points, 50..=100000).text("Points"));
