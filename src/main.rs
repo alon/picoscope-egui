@@ -1,4 +1,5 @@
-use egui::*;
+use std::sync::Arc;
+use egui::*;    
 use eframe::egui;
 use epi;
 use plot::{
@@ -11,32 +12,58 @@ use pico_sdk::{
     download::{cache_resolution, download_drivers_to_cache},
     enumeration::{DeviceEnumerator, EnumResultHelpers},
 };
+use pico_sdk::prelude::*;
 
-fn enumerate() -> Result<Vec<std::result::Result<pico_sdk::prelude::EnumeratedDevice, pico_sdk::prelude::EnumerationError>>, Box<dyn std::error::Error>> {
-    let enumerator = DeviceEnumerator::with_resolution(cache_resolution());
 
-    println!("Enumerating Pico devices...");
-    let results = enumerator.enumerate();
+struct PicoScopeHandler;
 
-    let missing_drivers = results.missing_drivers();
-
-    if !missing_drivers.is_empty() {
-        println!(
-            "Downloading drivers that failed to load {:?}",
-            &missing_drivers
-        );
-        download_drivers_to_cache(&missing_drivers)?;
-        println!("Downloads complete");
+impl NewDataHandler for PicoScopeHandler {
+    fn handle_event(&self, event: &StreamingEvent) {
+        println!("Sample count: {}", event.length);
     }
-    Ok(results)
 }
 
+
+
+impl PicoScopeApp {
+
+    fn connect_to_scope(&mut self) -> Result<Vec<std::result::Result<pico_sdk::prelude::EnumeratedDevice, pico_sdk::prelude::EnumerationError>>, Box<dyn std::error::Error>> {
+        let enumerator = DeviceEnumerator::with_resolution(cache_resolution());
+
+        println!("Enumerating Pico devices...");
+        let results = enumerator.enumerate();
+
+        let missing_drivers = results.missing_drivers();
+
+        if !missing_drivers.is_empty() {
+            println!(
+                "Downloading drivers that failed to load {:?}",
+                &missing_drivers
+            );
+            download_drivers_to_cache(&missing_drivers)?;
+            println!("Downloads complete");
+            let enum_device = results.into_iter().flatten().next().expect("No device found");
+            let device = enum_device.open()?;
+            let stream_device = device.into_streaming_device();
+            stream_device.enable_channel(PicoChannel::A, PicoRange::X1_PROBE_2V, PicoCoupling::DC);
+            stream_device.enable_channel(PicoChannel::B, PicoRange::X1_PROBE_1V, PicoCoupling::AC);
+            // When handler goes out of scope, the subscription is dropped
+
+            stream_device.new_data.subscribe(self.handler.clone());
+            stream_device.start(1_000)?;
+        }
+        let results = enumerator.enumerate();
+        Ok(results)
+    }
+
+}
 
 struct PicoScopeApp {
     num_points: u32,
     updates_per_second: f32,
     last_update_start: f64,
     last_update_count: usize,
+    handler: Arc<PicoScopeHandler>,
 }
 
 impl Default for PicoScopeApp {
@@ -46,6 +73,7 @@ impl Default for PicoScopeApp {
             last_update_count: 0,
             last_update_start: 0.0,
             updates_per_second: 0.0,
+            handler: Arc::new(PicoScopeHandler { }),
         }
     }
 }
@@ -95,8 +123,8 @@ impl epi::App for PicoScopeApp {
 }
 
 fn main() {
-    let app = PicoScopeApp::default();
+    let mut app = PicoScopeApp::default();
     let native_options = eframe::NativeOptions::default();
-    println!("pico enumerate: {:?}", enumerate());
+    println!("pico enumerate: {:?}", app.connect_to_scope());
     eframe::run_native(Box::new(app), native_options);
 }
