@@ -79,24 +79,26 @@ impl PicoScopeApp {
                 }
             }
             println!("Downloads complete");
-            let enum_device = results.into_iter().flatten().next().expect("No device found");
-            let device = match enum_device.open() {
-                Ok(device) => device,
-                Err(err) => {
-                    println!("error: {:?}", err);
-                    return;
-                }
-            };
-            let stream_device = device.into_streaming_device();
-            stream_device.enable_channel(PicoChannel::A, PicoRange::X1_PROBE_2V, PicoCoupling::DC);
-            stream_device.enable_channel(PicoChannel::B, PicoRange::X1_PROBE_1V, PicoCoupling::AC);
-            // When handler goes out of scope, the subscription is dropped
-
-            stream_device.new_data.subscribe(self.handler.clone());
-            stream_device.start(1_000).unwrap();
         }
         let results = enumerator.enumerate();
         println!("pico enumerate: {:?}", results);
+
+        let enum_device = results.into_iter().flatten().next().expect("No device found");
+        let device = match enum_device.open() {
+            Ok(device) => device,
+            Err(err) => {
+                println!("error: {:?}", err);
+                return;
+            }
+        };
+        let stream_device = device.into_streaming_device();
+        stream_device.enable_channel(PicoChannel::A, PicoRange::X1_PROBE_2V, PicoCoupling::DC);
+        stream_device.enable_channel(PicoChannel::B, PicoRange::X1_PROBE_1V, PicoCoupling::AC);
+        // When handler goes out of scope, the subscription is dropped
+
+        stream_device.new_data.subscribe(self.handler.clone());
+        stream_device.start(1_000).unwrap();
+        self.stream_device = Some(stream_device);
     }
 
 }
@@ -109,6 +111,7 @@ struct PicoScopeApp {
     handler: Arc<PicoScopeHandler>,
     receiver: Receiver<StreamingEvent>,
     channels: Vec<Channel>,
+    stream_device: Option<PicoStreamingDevice>,
 }
 
 struct Channel {
@@ -126,7 +129,8 @@ impl Default for PicoScopeApp {
             updates_per_second: 0.0,
             receiver,
             handler: Arc::new(PicoScopeHandler { sender }),
-            channels: vec![]
+            channels: vec![],
+            stream_device: None,
         }
     }
 }
@@ -162,18 +166,21 @@ impl epi::App for PicoScopeApp {
             }
             ui.heading("Picoscope App");
             let num_points = self.num_points;
-            ui.group(|ui| {
-                ui.add(egui::Label::new(format!("updates per second: {}", self.updates_per_second)));
-                ui.add(egui::Slider::new(&mut self.num_points, 50..=100000).text("Points"));
-                ui.add(egui::DragValue::new(&mut self.num_points)
-                    .speed((num_points as f64).max(2.0).log2())
-                    .clamp_range(50..=100000)
-                    .prefix("Points"));
+            ui.horizontal(|ui| {
+                ui.add(egui::Label::new(format!("channels: {}", self.channels.len())));
+                ui.group(|ui| {
+                    ui.add(egui::Label::new(format!("updates per second: {}", self.updates_per_second)));
+                    ui.add(egui::Slider::new(&mut self.num_points, 50..=100000).text("Points"));
+                    ui.add(egui::DragValue::new(&mut self.num_points)
+                        .speed((num_points as f64).max(2.0).log2())
+                        .clamp_range(50..=100000)
+                        .prefix("Points"));
+                });
             });
             let plot = Plot::new("picoscope").legend(Legend::default());
                 plot.show(ui, |plot_ui| {
                 // TODO: For now just show the first channel
-                if self.channels.len() > 0 {
+                if self.channels.len() == 0 {
                     // TODO: pass num_points to the simulation channel
                     // so it can be used to do stuff (amp / sin / cos)
                     let markers = Points::new(Values::from_values(
@@ -183,6 +190,8 @@ impl epi::App for PicoScopeApp {
                         .shape(MarkerShape::Circle)
                         ;
                     plot_ui.points(markers)
+                } else {
+
                 }
             }).response
         });
