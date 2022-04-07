@@ -1,4 +1,4 @@
-use std::borrow::{Borrow, BorrowMut};
+use std::collections::HashMap;
 use std::sync::Arc;
 use egui::*;    
 use eframe::egui;
@@ -93,53 +93,20 @@ impl PicoScopeApp {
             }
         };
 
-        // Start an AWG function -
-        let offset_voltage: i32 = 0;
-        let pk_to_pk: u32 = 200_000;
-        let start_delta_phase: u32 = 0;
-        let stop_delta_phase: u32 = 0;
-        let delta_phase_increment: u32 = 0;
-        let dwell_count: u32 = 1;
-        let arbitrary_waveform = vec![1, 1, 1, 1, 0, 0, 0, 0];
-        let shots: u32 = 0;
-        let sweeps: u32 = 0;
-        let ext_in_threshold: i16 = 0;
-        let handle = device.handle.lock().take();
-
-        match handle {
-            Some(handle) => {
-                device.driver.set_sig_gen_arbitrary(
-                    handle,
-                    offset_voltage,
-                    pk_to_pk,
-                    start_delta_phase,
-                    stop_delta_phase,
-                    delta_phase_increment,
-                    dwell_count,
-                    &arbitrary_waveform,
-                    PicoSweepType::SweepUp,
-                    PicoExtraOperations::ExtraOperationsOff,
-                    PicoIndexMode::IndexModeSingle,
-                    shots,
-                    sweeps,
-                    PicoSigGenTrigType::SigGenTrigTypeRising,
-                    PicoSigGenTrigSource::SigGenTrigSourceNone,
-                    ext_in_threshold,
-                ).unwrap();
-            },
-            None => {}
-        }
-
         let stream_device = device.into_streaming_device();
+
+        //stream_device.set_sig_gen_arbitrary();
+        stream_device.set_sig_gen_built_in_v2();
+
         stream_device.enable_channel(PicoChannel::A, PicoRange::X1_PROBE_2V, PicoCoupling::DC);
         stream_device.enable_channel(PicoChannel::B, PicoRange::X1_PROBE_1V, PicoCoupling::AC);
         // When handler goes out of scope, the subscription is dropped
 
         stream_device.new_data.subscribe(self.handler.clone());
-        stream_device.start(1_00_000).unwrap();
+        stream_device.start(1_000_000).unwrap();
+
         self.stream_device = Some(stream_device);
     }
-
 }
 
 struct PicoScopeApp {
@@ -149,7 +116,7 @@ struct PicoScopeApp {
     last_update_count: usize,
     handler: Arc<PicoScopeHandler>,
     receiver: Receiver<StreamingEvent>,
-    channels: Vec<Channel>,
+    channels: HashMap<PicoChannel, Channel>,
     stream_device: Option<PicoStreamingDevice>,
     sampling_rate: usize,
 }
@@ -164,13 +131,13 @@ impl Default for PicoScopeApp {
     fn default() -> Self {
         let (sender, receiver) = unbounded();
         PicoScopeApp {
-            num_points: 100,
+            num_points: 10000,
             last_update_count: 0,
             last_update_start: 0.0,
             updates_per_second: 0.0,
             receiver,
             handler: Arc::new(PicoScopeHandler { sender }),
-            channels: vec![],
+            channels: HashMap::new(),
             stream_device: None,
             sampling_rate: 0,
         }
@@ -195,13 +162,44 @@ impl epi::App for PicoScopeApp {
                     // ignore
                 },
                 Ok(data) => {
-                    self.channels = data.channels.iter().map(|(pico_channel, c)| {
-                        Channel {
-                            name: format!("{}", pico_channel),
-                            multiplier: c.multiplier,
-                            samples: c.samples.iter().map(|x| *x as f64).collect()
+                    for (pico_channel, c) in data.channels {
+                        match self.channels.get_mut(&pico_channel) {
+                            None => {
+                                let channel = Channel {
+                                    name: format!("{}", pico_channel),
+                                    multiplier: c.multiplier,
+                                    samples: c.samples.iter().map(|x| *x as f64).collect()
+                                };
+                                self.channels.insert(pico_channel, channel);
+                            },
+                            Some(channel) => {
+                                channel.multiplier = c.multiplier;
+                                channel.name = format!("{}", pico_channel);
+                                // append points up to self.num_points, truncate first to drop old ones
+                                // so we keep to the length
+                                // not the best way
+                                let n = c.samples.len();
+                                let n_existing = channel.samples.len();
+                                if n > self.num_points as usize {
+                                    // just take the new vector
+                                    let start = n - self.num_points as usize;
+                                    channel.samples = c.samples[start..].iter().map(|x| *x as f64).collect();
+                                } else if n + n_existing < self.num_points as usize {
+                                    // pure concatenation
+                                    channel.samples.extend(c.samples.iter().map(|x| *x as f64));
+                                } else {
+                                    // A
+                                    // =>
+                                    // A[n-kept..] + B
+                                    // total = num_points
+                                    let kept = (self.num_points as usize) - n;
+                                    channel.samples = channel.samples[(n_existing - kept)..]
+                                        .iter().map(|x| *x).chain(c.samples.iter().map(|x| *x as f64)).collect();
+    
+                                }
+                            }
                         }
-                    }).collect();
+                    }
                 }
             }
             let now = ui.input().time;
@@ -220,7 +218,7 @@ impl epi::App for PicoScopeApp {
                     ui.add(egui::Label::new({
                         let temp: Vec<String> = self.channels
                             .iter()
-                            .map(|c| format!("{}-x{}", c.name, c.multiplier)).collect();
+                            .map(|(_pico_channel, c)| format!("{}-x{}", c.name, c.multiplier)).collect();
                         temp.join(" ")
                     }));
                     let mut sampling_rate = self.sampling_rate;
@@ -259,14 +257,16 @@ impl epi::App for PicoScopeApp {
                         ;
                     plot_ui.points(markers)
                 } else {
-                    for channel in &self.channels {
-                        let markers = Points::new(Values::from_values(
+                    for (_pico_channel, channel) in &self.channels {
+                        let values = Values::from_values(
                             channel.samples.iter().enumerate().map(|(i, v)| Value {
                                 x: i as f64,
                                 y: *v,
-                            }).collect()))
-                                .shape(MarkerShape::Circle);
-                        plot_ui.points(markers)    
+                            }).collect());
+                        //let markers = Points::new(values).shape(MarkerShape::Circle);
+                        let line = Line::new(values);
+                        //plot_ui.points(markers)    
+                        plot_ui.line(line);
                     }
                 }
             }).response
