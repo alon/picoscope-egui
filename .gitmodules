@@ -1,3 +1,4 @@
 [submodule "subs/pico-sdk"]
 	path = subs/pico-sdk
-	url = /home/alon/src/pico-sdk
+	url = https://github.com/alon/pico-sdk
+	branch = awg
