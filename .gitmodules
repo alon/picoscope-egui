@@ -1,0 +1,3 @@
+[submodule "subs/pico-sdk"]
+	path = subs/pico-sdk
+	url = /home/alon/src/pico-sdk

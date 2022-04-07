@@ -1,3 +1,4 @@
+use std::borrow::{Borrow, BorrowMut};
 use std::sync::Arc;
 use egui::*;    
 use eframe::egui;
@@ -15,6 +16,7 @@ use pico_sdk::{
 use pico_sdk::prelude::*;
 
 use crossbeam_channel::{unbounded, Sender, Receiver};
+use pico_sdk::common::{PicoExtraOperations, PicoIndexMode, PicoSigGenTrigSource, PicoSigGenTrigType, PicoSweepType};
 
 struct PicoScopeHandler {
     sender: Sender<StreamingEvent>,
@@ -90,6 +92,44 @@ impl PicoScopeApp {
                 return;
             }
         };
+
+        // Start an AWG function -
+        let offset_voltage: i32 = 0;
+        let pk_to_pk: u32 = 200_000;
+        let start_delta_phase: u32 = 0;
+        let stop_delta_phase: u32 = 0;
+        let delta_phase_increment: u32 = 0;
+        let dwell_count: u32 = 1;
+        let arbitrary_waveform = vec![1, 1, 1, 1, 0, 0, 0, 0];
+        let shots: u32 = 0;
+        let sweeps: u32 = 0;
+        let ext_in_threshold: i16 = 0;
+        let handle = device.handle.lock().take();
+
+        match handle {
+            Some(handle) => {
+                device.driver.set_sig_gen_arbitrary(
+                    handle,
+                    offset_voltage,
+                    pk_to_pk,
+                    start_delta_phase,
+                    stop_delta_phase,
+                    delta_phase_increment,
+                    dwell_count,
+                    &arbitrary_waveform,
+                    PicoSweepType::SweepUp,
+                    PicoExtraOperations::ExtraOperationsOff,
+                    PicoIndexMode::IndexModeSingle,
+                    shots,
+                    sweeps,
+                    PicoSigGenTrigType::SigGenTrigTypeRising,
+                    PicoSigGenTrigSource::SigGenTrigSourceNone,
+                    ext_in_threshold,
+                ).unwrap();
+            },
+            None => {}
+        }
+
         let stream_device = device.into_streaming_device();
         stream_device.enable_channel(PicoChannel::A, PicoRange::X1_PROBE_2V, PicoCoupling::DC);
         stream_device.enable_channel(PicoChannel::B, PicoRange::X1_PROBE_1V, PicoCoupling::AC);
