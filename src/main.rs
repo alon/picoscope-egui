@@ -64,9 +64,10 @@ impl PicoScopeApp {
             }
         });
         */
+        panic!("TODO")
     }
 
-    fn connect_to_scope_real(&mut self) {
+    fn get_device(&mut self) -> PicoStreamingDevice {
         let enumerator = DeviceEnumerator::with_resolution(cache_resolution());
 
         println!("Enumerating Pico devices...");
@@ -82,8 +83,7 @@ impl PicoScopeApp {
             match download_drivers_to_cache(&missing_drivers) {
                 Ok(_) => { },
                 Err(_) => {
-                    println!("error downloading drivers");
-                    return;
+                    panic!("error downloading drivers");
                 }
             }
             println!("Downloads complete");
@@ -95,28 +95,51 @@ impl PicoScopeApp {
         let device = match enum_device.open() {
             Ok(device) => device,
             Err(err) => {
-                println!("error: {:?}", err);
-                return;
+                panic!("error: {:?}", err);
+            }
+        };
+        device.into_streaming_device()
+    }
+
+    fn connect_to_scope_real(&mut self) {
+        self.stream_device = Some(self.get_device());
+        self.reset_sig_gen_built_in();
+    }
+
+    fn reset_sig_gen_built_in(&mut self) {
+        let stream_device = self.stream_device.as_ref().unwrap();
+
+        let (sweeps, shots) = match self.sig_gen.trigger_source {
+            PicoSigGenTrigSource::SigGenTrigSourceNone => (0, 0),
+            _ => match self.sig_gen.sig {
+                SigGenEnum::Shot { .. } => (0, 1),
+                SigGenEnum::Sweep { .. } => (1, 0),
             }
         };
 
-        let stream_device = device.into_streaming_device();
+        let (start_freq, end_freq, dwell) = match self.sig_gen.sig {
+            SigGenEnum::Shot { freq_hz, duration_secs } => (freq_hz, freq_hz, duration_secs),
+            SigGenEnum::Sweep { start_hz, end_hz, duration_secs } => {
+                let d_hz = end_hz - start_hz;
+                (start_hz, end_hz, duration_secs / d_hz)
+            }
+        };
 
         //stream_device.set_sig_gen_arbitrary();
         stream_device.set_sig_gen_built_in_v2(
             0,
-            2_000_000, // 2V pk-to-pk, so +-1V
+            self.sig_gen.pk_to_pk_microvolt, // 2V pk-to-pk, so +-1V
             PicoWaveType::Sine,
-            20_000.0,
-            40_000.0,
+            start_freq,
+            end_freq,
             1.0,
-            0.5e-4,
+            dwell,
             PicoSweepType::SweepUp,
             PicoExtraOperations::ExtraOperationsOff,
-            0,
-            0,
+            shots,
+            sweeps,
             PicoSigGenTrigType::SigGenTrigTypeRising,
-            PicoSigGenTrigSource::SigGenTrigSourceNone,
+            self.sig_gen.trigger_source,
             0);
 
         stream_device.enable_channel(PicoChannel::A, PicoRange::X1_PROBE_2V, PicoCoupling::DC);
@@ -124,9 +147,51 @@ impl PicoScopeApp {
         // When handler goes out of scope, the subscription is dropped
 
         stream_device.new_data.subscribe(self.handler.clone());
-        stream_device.start(1_000_000).unwrap();
+        stream_device.start(self.sampling_rate as u32).unwrap();
+    }
 
-        self.stream_device = Some(stream_device);
+    fn trigger(&self) {
+        let stream_device = self.stream_device.as_ref().unwrap();
+        stream_device.sig_gen_start();
+    }
+}
+
+#[derive(PartialEq)]
+enum SigGenType {
+    Shot,
+    Sweep,
+}
+
+#[derive(Clone)]
+enum SigGenEnum {
+    Shot { freq_hz: f64, duration_secs: f64 },
+    Sweep { start_hz: f64, end_hz: f64, duration_secs: f64 }
+}
+
+impl Default for SigGenEnum {
+    fn default() -> Self {
+        SigGenEnum::Sweep {
+            start_hz: 20_000.0,
+            end_hz: 40_000.0,
+            duration_secs: 1.0,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct SigGen {
+    pk_to_pk_microvolt: u32,
+    sig: SigGenEnum,
+    trigger_source: PicoSigGenTrigSource,
+}
+
+impl Default for SigGen {
+    fn default() -> Self {
+        SigGen {
+            pk_to_pk_microvolt: 2_000_000,
+            sig: Default::default(),
+            trigger_source: PicoSigGenTrigSource::SigGenTrigSourceNone,
+        }
     }
 }
 
@@ -143,6 +208,7 @@ struct PicoScopeApp {
 
     // UI State
     show_t_or_fft: PlotDisplay,
+    sig_gen: SigGen,
 }
 
 struct Channel {
@@ -163,8 +229,9 @@ impl Default for PicoScopeApp {
             handler: Arc::new(PicoScopeHandler { sender }),
             channels: HashMap::new(),
             stream_device: None,
-            sampling_rate: 0,
+            sampling_rate: 1_000_000,
             show_t_or_fft: PlotDisplay::Time,
+            sig_gen: Default::default(),
         }
     }
 }
@@ -235,13 +302,15 @@ impl epi::App for PicoScopeApp {
                 self.updates_per_second = self.last_update_count as f32 / dt as f32;
                 self.last_update_count = 0;
             }
-            ui.heading("Picoscope App");
+            //ui.heading("Picoscope App");
             let num_points = self.num_points;
 
             let mut show_t = match self.show_t_or_fft {
                 PlotDisplay::Time => false,
                 PlotDisplay::FFT => true,
             };
+
+            // Top bar
 
             ui.horizontal(|ui| {
                 ui.group(|ui| {
@@ -261,9 +330,7 @@ impl epi::App for PicoScopeApp {
                             ui.selectable_value(&mut sampling_rate, 2_000_000, "2 Msps");
                         }
                     );
-                    if self.sampling_rate != sampling_rate {
-                        println!("todo: change sampling rate to {}", sampling_rate)
-                    }
+                    self.sampling_rate = sampling_rate;
                     ui.checkbox(&mut show_t, "FFT");
                 });
 
@@ -282,6 +349,81 @@ impl epi::App for PicoScopeApp {
                         .prefix("Points"));
                 });
             });
+
+            
+            // Signal generator
+            ui.horizontal(|ui| {
+                if ui.button("Update").clicked() {
+                    self.reset_sig_gen_built_in();
+                }
+                ui.group(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut self.sig_gen.trigger_source, PicoSigGenTrigSource::SigGenTrigSourceNone, "No trigger");
+                        ui.radio_value(&mut self.sig_gen.trigger_source, PicoSigGenTrigSource::SigGenTrigSourceSoftTrig, "Software");
+                    });
+                });
+                match self.sig_gen.trigger_source {
+                    PicoSigGenTrigSource::SigGenTrigSourceSoftTrig => {
+                        if ui.button("Trigger").clicked() {
+                            self.trigger();
+                        }
+                    },
+                    _ => {}
+                }
+                let mut sig_gen_type = match self.sig_gen.sig {
+                    SigGenEnum::Shot { .. } => SigGenType::Shot,
+                    SigGenEnum::Sweep { .. } => SigGenType::Sweep,
+                };
+                ui.group(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut sig_gen_type, SigGenType::Shot, "Shot");
+                        ui.radio_value(&mut sig_gen_type, SigGenType::Sweep, "Sweep");
+                    });
+                });
+                // Now recreate siggen.sig from sig_gen_type if they were switched
+                let (start_freq, end_freq, duration) = 
+                    match self.sig_gen.sig {
+                        SigGenEnum::Shot { freq_hz, duration_secs } => (freq_hz, freq_hz, duration_secs),
+                        SigGenEnum::Sweep { start_hz, end_hz, duration_secs } => (start_hz, end_hz, duration_secs),
+                    };
+                    
+                self.sig_gen.sig = match (&self.sig_gen.sig, sig_gen_type) {
+                    (SigGenEnum::Shot { .. }, SigGenType::Sweep) => {
+                        SigGenEnum::Sweep { start_hz: start_freq, end_hz: end_freq, duration_secs: duration }
+                    },
+                    (SigGenEnum::Sweep { ..}, SigGenType::Shot) => {
+                        SigGenEnum::Shot { freq_hz: start_freq, duration_secs: duration }
+                    }
+                    _ => { self.sig_gen.sig.clone() /* nothing to change */}
+                };
+                match &mut self.sig_gen.sig {
+                    SigGenEnum::Shot { ref mut freq_hz, .. } => {
+                        ui.group(|ui| {
+                            let mut freq_slider = *freq_hz;
+                            ui.add(egui::Label::new(format!("Freq: {}", freq_hz)));
+                            ui.add(egui::Slider::new(&mut freq_slider, 10_000.0..=100_000.0).text("Hz"));
+                            *freq_hz = freq_slider;
+                        });
+                    },
+                    SigGenEnum::Sweep { ref mut start_hz, ref mut end_hz, .. } => {
+                        let mut start_hz_slider = *start_hz;
+                        let mut end_hz_slider = *end_hz;
+                        ui.group(|ui| {
+                            ui.add(egui::Label::new(format!("Start Freq: {}", start_hz)));
+                            ui.add(egui::Slider::new(&mut start_hz_slider, 10_000.0..=100_000.0).text("Hz"));
+                        });   
+                        ui.group(|ui| {
+                            ui.add(egui::Label::new(format!("End Freq: {}", end_hz)));
+                            ui.add(egui::Slider::new(&mut end_hz_slider, start_hz_slider..=100_000.0).text("Hz"));
+                        });
+                        *start_hz = start_hz_slider;
+                        *end_hz = end_hz_slider;
+                    }
+                };
+            });
+
+            // Main - Plot
+
             let plot = Plot::new("picoscope").legend(Legend::default());
                 plot.show(ui, |plot_ui| {
                 // TODO: For now just show the first channel
