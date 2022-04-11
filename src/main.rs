@@ -265,15 +265,31 @@ impl epi::App for PicoScopeApp {
                     plot_ui.points(markers)
                 } else {
                     for (_pico_channel, channel) in &self.channels {
-                        let values = Values::from_values(
-                            channel.samples.iter().enumerate().map(|(i, v)| Value {
-                                x: i as f64,
-                                y: *v,
-                            }).collect());
-                        //let markers = Points::new(values).shape(MarkerShape::Circle);
-                        let line = Line::new(values);
                         //plot_ui.points(markers)    
-                        plot_ui.line(line);
+                        if show_t_or_fft {
+                            let values = Values::from_values(
+                                channel.samples.iter().enumerate().map(|(i, v)| Value {
+                                    x: i as f64,
+                                    y: *v,
+                                }).collect());
+                            //let markers = Points::new(values).shape(MarkerShape::Circle);
+                            let line = Line::new(values);
+                            plot_ui.line(line);
+                        } else {
+                            // plot fft
+                            let mut planner = FftPlanner::new();
+                            let fft = planner.plan_fft_forward(channel.samples.len());
+                            let mut buffer: Vec<_> = channel.samples.iter().map(|v| Complex::new(*v, 0.0)).collect();
+                            fft.process(&mut buffer);
+                            let values = Values::from_values(
+                                buffer.iter().enumerate().map(|(i, v)| Value {
+                                    x: i as f64,
+                                    y: (v.re * v.re + v.im * v.im).sqrt(),
+                                }).collect());
+                            //let markers = Points::new(values).shape(MarkerShape::Circle);
+                            let line = Line::new(values);
+                            plot_ui.line(line);
+                        }
                     }
                 }
             }).response
