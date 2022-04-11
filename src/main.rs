@@ -33,7 +33,10 @@ impl NewDataHandler for PicoScopeHandler {
     }
 }
 
-
+enum PlotDisplay {
+    Time,
+    FFT
+}
 
 impl PicoScopeApp {
 
@@ -137,6 +140,9 @@ struct PicoScopeApp {
     channels: HashMap<PicoChannel, Channel>,
     stream_device: Option<PicoStreamingDevice>,
     sampling_rate: usize,
+
+    // UI State
+    show_t_or_fft: PlotDisplay,
 }
 
 struct Channel {
@@ -158,6 +164,7 @@ impl Default for PicoScopeApp {
             channels: HashMap::new(),
             stream_device: None,
             sampling_rate: 0,
+            show_t_or_fft: PlotDisplay::Time,
         }
     }
 }
@@ -231,7 +238,10 @@ impl epi::App for PicoScopeApp {
             ui.heading("Picoscope App");
             let num_points = self.num_points;
 
-            let mut show_t_or_fft: bool = false;
+            let mut show_t = match self.show_t_or_fft {
+                PlotDisplay::Time => false,
+                PlotDisplay::FFT => true,
+            };
 
             ui.horizontal(|ui| {
                 ui.group(|ui| {
@@ -254,8 +264,15 @@ impl epi::App for PicoScopeApp {
                     if self.sampling_rate != sampling_rate {
                         println!("todo: change sampling rate to {}", sampling_rate)
                     }
-                    ui.checkbox(&mut show_t_or_fft, "FFT");
+                    ui.checkbox(&mut show_t, "FFT");
                 });
+
+                self.show_t_or_fft = if show_t {
+                    PlotDisplay::FFT
+                } else {
+                    PlotDisplay::Time
+                };
+
                 ui.group(|ui| {
                     ui.add(egui::Label::new(format!("updates per second: {}", self.updates_per_second)));
                     ui.add(egui::Slider::new(&mut self.num_points, 50..=100000).text("Points"));
@@ -281,29 +298,35 @@ impl epi::App for PicoScopeApp {
                 } else {
                     for (_pico_channel, channel) in &self.channels {
                         //plot_ui.points(markers)    
-                        if show_t_or_fft {
-                            let values = Values::from_values(
-                                channel.samples.iter().enumerate().map(|(i, v)| Value {
-                                    x: i as f64,
-                                    y: *v,
-                                }).collect());
-                            //let markers = Points::new(values).shape(MarkerShape::Circle);
-                            let line = Line::new(values);
-                            plot_ui.line(line);
-                        } else {
-                            // plot fft
-                            let mut planner = FftPlanner::new();
-                            let fft = planner.plan_fft_forward(channel.samples.len());
-                            let mut buffer: Vec<_> = channel.samples.iter().map(|v| Complex::new(*v, 0.0)).collect();
-                            fft.process(&mut buffer);
-                            let values = Values::from_values(
-                                buffer.iter().enumerate().map(|(i, v)| Value {
-                                    x: i as f64,
-                                    y: (v.re * v.re + v.im * v.im).sqrt(),
-                                }).collect());
-                            //let markers = Points::new(values).shape(MarkerShape::Circle);
-                            let line = Line::new(values);
-                            plot_ui.line(line);
+                        match self.show_t_or_fft {
+                            PlotDisplay::Time => {
+                                let values = Values::from_values(
+                                    channel.samples.iter().enumerate().map(|(i, v)| Value {
+                                        x: i as f64,
+                                        y: *v,
+                                    }).collect());
+                                //let markers = Points::new(values).shape(MarkerShape::Circle);
+                                let line = Line::new(values);
+                                plot_ui.line(line);
+                            },
+                            PlotDisplay::FFT => {
+                                // plot fft - half the range, since it is real, so symmetric
+                                let mut planner = FftPlanner::new();
+                                let n = channel.samples.len();
+                                let fft = planner.plan_fft_forward(n);
+                                let mut buffer: Vec<_> = channel.samples.iter().map(|v| Complex::new(*v, 0.0)).collect();
+                                fft.process(&mut buffer);
+                                let dt = 1e-6;
+                                let df = 1.0 / dt / (n as f64);
+                                let values = Values::from_values(
+                                    buffer.iter().take(n / 2).enumerate().map(|(i, v)| Value {
+                                        x: i as f64 * df,
+                                        y: (v.re * v.re + v.im * v.im).sqrt(),
+                                    }).collect());
+                                //let markers = Points::new(values).shape(MarkerShape::Circle);
+                                let line = Line::new(values);
+                                plot_ui.line(line);
+                            }
                         }
                     }
                 }
