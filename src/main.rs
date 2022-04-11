@@ -16,7 +16,8 @@ use pico_sdk::{
 use pico_sdk::prelude::*;
 
 use crossbeam_channel::{unbounded, Sender, Receiver};
-use pico_sdk::common::{PicoExtraOperations, PicoIndexMode, PicoSigGenTrigSource, PicoSigGenTrigType, PicoSweepType};
+use pico_sdk::common::{PicoExtraOperations, PicoIndexMode, PicoSigGenTrigSource, PicoSigGenTrigType,
+                       PicoSweepType, PicoWaveType};
 
 use rustfft::{FftPlanner, num_complex::Complex};
 
@@ -99,7 +100,21 @@ impl PicoScopeApp {
         let stream_device = device.into_streaming_device();
 
         //stream_device.set_sig_gen_arbitrary();
-        stream_device.set_sig_gen_built_in_v2();
+        stream_device.set_sig_gen_built_in_v2(
+            0,
+            2_000_000, // 2V pk-to-pk, so +-1V
+            PicoWaveType::Sine,
+            20_000.0,
+            40_000.0,
+            1.0,
+            0.5e-4,
+            PicoSweepType::SweepUp,
+            PicoExtraOperations::ExtraOperationsOff,
+            0,
+            0,
+            PicoSigGenTrigType::SigGenTrigTypeRising,
+            PicoSigGenTrigSource::SigGenTrigSourceNone,
+            0);
 
         stream_device.enable_channel(PicoChannel::A, PicoRange::X1_PROBE_2V, PicoCoupling::DC);
         stream_device.enable_channel(PicoChannel::B, PicoRange::X1_PROBE_1V, PicoCoupling::AC);
