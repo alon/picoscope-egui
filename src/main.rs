@@ -18,6 +18,9 @@ use pico_sdk::prelude::*;
 use crossbeam_channel::{unbounded, Sender, Receiver};
 use pico_sdk::common::{PicoExtraOperations, PicoIndexMode, PicoSigGenTrigSource, PicoSigGenTrigType, PicoSweepType};
 
+use rustfft::{FftPlanner, num_complex::Complex};
+
+
 struct PicoScopeHandler {
     sender: Sender<StreamingEvent>,
 }
@@ -212,6 +215,9 @@ impl epi::App for PicoScopeApp {
             }
             ui.heading("Picoscope App");
             let num_points = self.num_points;
+
+            let mut show_t_or_fft: bool = false;
+
             ui.horizontal(|ui| {
                 ui.group(|ui| {
                     ui.add(egui::Label::new(format!("channels: {}", self.channels.len())));
@@ -233,6 +239,7 @@ impl epi::App for PicoScopeApp {
                     if self.sampling_rate != sampling_rate {
                         println!("todo: change sampling rate to {}", sampling_rate)
                     }
+                    ui.checkbox(&mut show_t_or_fft, "FFT");
                 });
                 ui.group(|ui| {
                     ui.add(egui::Label::new(format!("updates per second: {}", self.updates_per_second)));

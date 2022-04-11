@@ -11,3 +11,4 @@ eframe = "*"
 epi = "*"
 pico-sdk = { path = "subs/pico-sdk/sdk" }
 crossbeam-channel = "*"
+rustfft = "*"
