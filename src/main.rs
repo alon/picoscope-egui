@@ -82,36 +82,79 @@ impl Default for SigGen {
     }
 }
 
-impl PicoScopeApp {
+#[derive(Debug, Clone)]
+struct StreamProperties {
+    sampling_rate: usize,
+    a_range: PicoRange,
+    b_range: PicoRange,
+}
 
-    fn connect_to_scope(&mut self) {
-        let simulate = std::env::var("PICOSCOPE_SIMULATE").unwrap_or("0".into()) == "1";
-        if simulate {
-            self.connect_to_simulation()
-        } else {
-            self.connect_to_scope_real()
+impl Default for StreamProperties {
+    fn default() -> Self {
+        StreamProperties {
+            sampling_rate: 1_000_000,
+            a_range: PicoRange::X1_PROBE_100V,
+            b_range: PicoRange::X1_PROBE_100MV,
         }
     }
+}
 
-    fn connect_to_simulation(&mut self) {
-        /*
-        let mut handler = self.handler.clone();
-        std::thread::spawn(move || {
-            loop {
-                std::thread::sleep_ms(10);
-                let event = StreamingEvent {
-                    length: 1,
-                    samples_per_second: 1_000_000,
-                    channels: 
-                };
-                handler(event);
-            }
-        });
-        */
-        eprintln!("TODO");
+trait AppScope {
+    fn set_siggen(&self,
+                  props: SetSigGenBuiltInV2Properties,
+                  handler: Arc<PicoScopeHandler>,
+                  stream_props: StreamProperties,
+    ) -> PicoResult<()>;
+
+    fn trigger(&self);
+}
+
+struct AppPicoScope {
+    stream_device: PicoStreamingDevice,
+}
+
+struct AppSimulatedScope {}
+
+impl AppScope for AppPicoScope {
+    fn set_siggen(&self,
+                  props: SetSigGenBuiltInV2Properties,
+                  handler: Arc<PicoScopeHandler>,
+                  stream_props: StreamProperties) -> PicoResult<()> {
+        // TODO: add arbitrary
+        //stream_device.set_sig_gen_arbitrary();
+        let ret = self.stream_device.set_sig_gen_built_in_v2(
+            props.offset_voltage,
+            props.pk_to_pk,
+            props.wave_type,
+            props.start_frequency,
+            props.stop_frequency,
+            props.increment,
+            props.dwell_time,
+            props.sweep_type,
+            props.extra_operations,
+            props.sweeps_shots,
+            props.trig_type,
+            props.trig_source,
+            props.ext_in_threshold,
+        );
+
+        self.stream_device.enable_channel(PicoChannel::A, stream_props.a_range, PicoCoupling::DC);
+        self.stream_device.enable_channel(PicoChannel::B, PicoRange::X1_PROBE_100MV, PicoCoupling::DC);
+        // When handler goes out of scope, the subscription is dropped
+
+        self.stream_device.new_data.subscribe(handler);
+        self.stream_device.start(stream_props.sampling_rate as u32).unwrap();
+        ret
     }
 
-    fn get_device(&mut self) -> PicoStreamingDevice {
+    fn trigger(&self) {
+        self.stream_device.sig_gen_software_control(1);
+        self.stream_device.sig_gen_software_control(0);
+    }
+}
+
+impl AppPicoScope {
+    fn new() -> Self {
         let enumerator = DeviceEnumerator::with_resolution(cache_resolution());
 
         println!("Enumerating Pico devices...");
@@ -142,17 +185,64 @@ impl PicoScopeApp {
                 panic!("error: {:?}", err);
             }
         };
-        device.into_streaming_device()
+        AppPicoScope { stream_device: device.into_streaming_device() }
     }
+}
 
-    fn connect_to_scope_real(&mut self) {
-        self.stream_device = Some(self.get_device());
+impl AppSimulatedScope {
+    // fn new() -> Self {
+    //
+    // }
+}
+
+
+struct SetSigGenBuiltInV2Properties {
+    offset_voltage: i32, /* microvolts */
+    pk_to_pk: u32,  /* microvolts */
+    wave_type: PicoWaveType,
+    start_frequency: f64, /* Hertz */
+    stop_frequency: f64, /* Hertz */
+    increment: f64, /* delta frequency jumps in Hertz */
+    dwell_time: f64, /* amount to stay at each frequency in seconds */
+    sweep_type: PicoSweepType,
+    extra_operations: PicoExtraOperations,
+    sweeps_shots: SweepShotCount,
+    trig_type: PicoSigGenTrigType,
+    trig_source: PicoSigGenTrigSource,
+    ext_in_threshold: i16
+}
+
+impl PicoScopeApp {
+
+    fn connect_to_scope(&mut self) {
+        let simulate = std::env::var("PICOSCOPE_SIMULATE").unwrap_or("0".into()) == "1";
+        if simulate {
+            self.connect_to_simulation()
+        } else {
+            self.stream_device = Some(Box::new(AppPicoScope::new()));
+        }
         self.reset_sig_gen_built_in().unwrap();
     }
 
-    fn reset_sig_gen_built_in(&mut self) -> PicoResult<()> {
-        let stream_device = self.stream_device.as_ref().unwrap();
+    fn connect_to_simulation(&mut self) {
+        /*
+        let mut handler = self.handler.clone();
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep_ms(10);
+                let event = StreamingEvent {
+                    length: 1,
+                    samples_per_second: 1_000_000,
+                    channels: 
+                };
+                handler(event);
+            }
+        });
+        */
+        eprintln!("TODO");
+    }
 
+    fn reset_sig_gen_built_in(&mut self) -> PicoResult<()> {
         let sweeps_shots = match self.sig_gen.trigger_source {
             PicoSigGenTrigSource::None => SweepShotCount::None,
             _ => match self.sig_gen.sig {
@@ -180,38 +270,33 @@ impl PicoScopeApp {
             }
         };
 
-        // TODO: add arbitrary
-        //stream_device.set_sig_gen_arbitrary();
-        let res = stream_device.set_sig_gen_built_in_v2(
-            self.sig_gen.offset_voltage_microvolt
-            , self.sig_gen.pk_to_pk_microvolt
+        let props = SetSigGenBuiltInV2Properties {
+              offset_voltage: self.sig_gen.offset_voltage_microvolt
+            , pk_to_pk: self.sig_gen.pk_to_pk_microvolt
             , wave_type
-            , start_freq
-            , end_freq
-            , 1.0
-            , dwell
-            , PicoSweepType::Up
-            , PicoExtraOperations::Off
+            , start_frequency: start_freq
+            , stop_frequency: end_freq
+            , increment: 1.0
+            , dwell_time: dwell
+            , sweep_type: PicoSweepType::Up
+            , extra_operations: PicoExtraOperations::Off
             , sweeps_shots
-            , self.sig_gen.trigger_type
-            , self.sig_gen.trigger_source
-            , 0);
-
-
-        stream_device.enable_channel(PicoChannel::A, PicoRange::X1_PROBE_2V, PicoCoupling::AC);
-        stream_device.enable_channel(PicoChannel::B, PicoRange::X1_PROBE_1V, PicoCoupling::AC);
-        // When handler goes out of scope, the subscription is dropped
-
-        stream_device.new_data.subscribe(self.handler.clone());
-        stream_device.start(self.sampling_rate as u32).unwrap();
+            , trig_type: self.sig_gen.trigger_type
+            , trig_source: self.sig_gen.trigger_source
+            , ext_in_threshold: 0
+        };
+        let scope = self.stream_device.as_ref().unwrap();
+        let res = scope.set_siggen(
+            props,
+            self.handler.clone(),
+            self.stream_props.clone());
 
         res
     }
 
     fn trigger(&self) {
         let stream_device = self.stream_device.as_ref().unwrap();
-        stream_device.sig_gen_software_control(1);
-        stream_device.sig_gen_software_control(0);
+        stream_device.trigger();
     }
 }
 
@@ -223,8 +308,8 @@ struct PicoScopeApp {
     handler: Arc<PicoScopeHandler>,
     receiver: Receiver<StreamingEvent>,
     channels: HashMap<PicoChannel, Channel>,
-    stream_device: Option<PicoStreamingDevice>,
-    sampling_rate: usize,
+    stream_device: Option<Box<dyn AppScope>>,
+    stream_props: StreamProperties,
 
     // UI State
     show_t_or_fft: PlotDisplay,
@@ -249,7 +334,7 @@ impl Default for PicoScopeApp {
             handler: Arc::new(PicoScopeHandler { sender }),
             channels: HashMap::new(),
             stream_device: None,
-            sampling_rate: 1_000_000,
+            stream_props: Default::default(),
             show_t_or_fft: PlotDisplay::Time,
             sig_gen: Default::default(),
         }
@@ -341,7 +426,7 @@ impl epi::App for PicoScopeApp {
                             .map(|(_pico_channel, c)| format!("{}-x{}", c.name, c.multiplier)).collect();
                         temp.join(" ")
                     }));
-                    let mut sampling_rate = self.sampling_rate;
+                    let mut sampling_rate = self.stream_props.sampling_rate;
                     egui::ComboBox::from_label("Sampling rate")
                         .selected_text(format!("{:?}", sampling_rate))
                         .show_ui(ui, |ui| {
@@ -350,7 +435,7 @@ impl epi::App for PicoScopeApp {
                             ui.selectable_value(&mut sampling_rate, 2_000_000, "2 Msps");
                         }
                     );
-                    self.sampling_rate = sampling_rate;
+                    self.stream_props.sampling_rate = sampling_rate;
                     ui.checkbox(&mut show_t, "FFT");
                 });
 
@@ -444,8 +529,8 @@ impl epi::App for PicoScopeApp {
                     SigGenEnum::ShotSine { ref mut freq_hz, .. } => {
                         ui.group(|ui| {
                             let mut freq_slider = *freq_hz;
-                            ui.add(egui::Label::new(format!("Freq: {}", freq_hz)));
-                            ui.add(egui::Slider::new(&mut freq_slider, 10_000.0..=100_000.0).text("Hz"));
+                            ui.add(egui::Label::new(format!("Freq: {:.0}", freq_hz)));
+                            ui.add(egui::Slider::new(&mut freq_slider, 10_000.0..=100_000.0).integer().text("Hz"));
                             *freq_hz = freq_slider;
                         });
                     },
@@ -456,12 +541,12 @@ impl epi::App for PicoScopeApp {
                         }
                         let mut end_hz_slider = *end_hz;
                         ui.group(|ui| {
-                            ui.add(egui::Label::new(format!("Start Freq: {}", start_hz)));
-                            ui.add(egui::Slider::new(&mut start_hz_slider, 10_000.0..=100_000.0).text("Hz"));
+                            ui.add(egui::Label::new(format!("Start Freq: {:.0}", start_hz)));
+                            ui.add(egui::Slider::new(&mut start_hz_slider, 10_000.0..=100_000.0).integer().text("Hz"));
                         });   
                         ui.group(|ui| {
-                            ui.add(egui::Label::new(format!("End Freq: {}", end_hz)));
-                            ui.add(egui::Slider::new(&mut end_hz_slider, start_hz_slider..=100_000.0).text("Hz"));
+                            ui.add(egui::Label::new(format!("End Freq: {:.0}", end_hz)));
+                            ui.add(egui::Slider::new(&mut end_hz_slider, start_hz_slider..=100_000.0).integer().text("Hz"));
                         });
                         *start_hz = start_hz_slider;
                         *end_hz = end_hz_slider;
