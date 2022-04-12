@@ -110,7 +110,7 @@ impl PicoScopeApp {
         let stream_device = self.stream_device.as_ref().unwrap();
 
         let (sweeps, shots) = match self.sig_gen.trigger_source {
-            PicoSigGenTrigSource::SigGenTrigSourceNone => (0, 0),
+            PicoSigGenTrigSource::None => (0, 0),
             _ => match self.sig_gen.sig {
                 SigGenEnum::Shot { .. } => (0, 1),
                 SigGenEnum::Sweep { .. } => (1, 0),
@@ -134,15 +134,15 @@ impl PicoScopeApp {
             end_freq,
             1.0,
             dwell,
-            PicoSweepType::SweepUp,
-            PicoExtraOperations::ExtraOperationsOff,
+            PicoSweepType::Up,
+            PicoExtraOperations::Off,
             shots,
             sweeps,
-            PicoSigGenTrigType::SigGenTrigTypeRising,
+            PicoSigGenTrigType::Rising,
             self.sig_gen.trigger_source,
             0);
 
-        stream_device.enable_channel(PicoChannel::A, PicoRange::X1_PROBE_2V, PicoCoupling::DC);
+        stream_device.enable_channel(PicoChannel::A, PicoRange::X1_PROBE_2V, PicoCoupling::AC);
         stream_device.enable_channel(PicoChannel::B, PicoRange::X1_PROBE_1V, PicoCoupling::AC);
         // When handler goes out of scope, the subscription is dropped
 
@@ -190,7 +190,7 @@ impl Default for SigGen {
         SigGen {
             pk_to_pk_microvolt: 2_000_000,
             sig: Default::default(),
-            trigger_source: PicoSigGenTrigSource::SigGenTrigSourceNone,
+            trigger_source: PicoSigGenTrigSource::None,
         }
     }
 }
@@ -358,12 +358,12 @@ impl epi::App for PicoScopeApp {
                 }
                 ui.group(|ui| {
                     ui.horizontal(|ui| {
-                        ui.radio_value(&mut self.sig_gen.trigger_source, PicoSigGenTrigSource::SigGenTrigSourceNone, "No trigger");
-                        ui.radio_value(&mut self.sig_gen.trigger_source, PicoSigGenTrigSource::SigGenTrigSourceSoftTrig, "Software");
+                        ui.radio_value(&mut self.sig_gen.trigger_source, PicoSigGenTrigSource::None, "No trigger");
+                        ui.radio_value(&mut self.sig_gen.trigger_source, PicoSigGenTrigSource::SoftTrig, "Software");
                     });
                 });
                 match self.sig_gen.trigger_source {
-                    PicoSigGenTrigSource::SigGenTrigSourceSoftTrig => {
+                    PicoSigGenTrigSource::SoftTrig => {
                         if ui.button("Trigger").clicked() {
                             self.trigger();
                         }
