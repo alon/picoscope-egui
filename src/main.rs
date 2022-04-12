@@ -159,6 +159,7 @@ impl AppPicoScope {
 
         println!("Enumerating Pico devices...");
         let results = enumerator.enumerate();
+        println!("pico enumerate: {:?}", results);
 
         let missing_drivers = results.missing_drivers();
 
@@ -175,8 +176,6 @@ impl AppPicoScope {
             }
             println!("Downloads complete");
         }
-        let results = enumerator.enumerate();
-        println!("pico enumerate: {:?}", results);
 
         let enum_device = results.into_iter().flatten().next().expect("No device found");
         let device = match enum_device.open() {
