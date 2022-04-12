@@ -12,3 +12,5 @@ epi = "*"
 pico-sdk = { path = "subs/pico-sdk/sdk" }
 crossbeam-channel = "*"
 rustfft = "*"
+tracing = "*"
+tracing-subscriber = "*"

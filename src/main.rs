@@ -93,8 +93,8 @@ impl Default for StreamProperties {
     fn default() -> Self {
         StreamProperties {
             sampling_rate: 1_000_000,
-            a_range: PicoRange::X1_PROBE_100V,
-            b_range: PicoRange::X1_PROBE_100MV,
+            a_range: PicoRange::X1_PROBE_1V,
+            b_range: PicoRange::X1_PROBE_1V,
         }
     }
 }
@@ -139,7 +139,7 @@ impl AppScope for AppPicoScope {
         );
 
         self.stream_device.enable_channel(PicoChannel::A, stream_props.a_range, PicoCoupling::DC);
-        self.stream_device.enable_channel(PicoChannel::B, PicoRange::X1_PROBE_100MV, PicoCoupling::DC);
+        self.stream_device.enable_channel(PicoChannel::B, stream_props.b_range, PicoCoupling::DC);
         // When handler goes out of scope, the subscription is dropped
 
         self.stream_device.new_data.subscribe(handler);
@@ -611,6 +611,12 @@ impl epi::App for PicoScopeApp {
 }
 
 fn main() {
+    if std::env::args().any(|a| a.contains("--trace")) {
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_span_events(tracing_subscriber::fmt::format::FmtSpan::ACTIVE)
+            .init();
+    }
     let mut app = PicoScopeApp::default();
     let native_options = eframe::NativeOptions::default();
     app.connect_to_scope();
