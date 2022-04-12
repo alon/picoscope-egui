@@ -16,8 +16,7 @@ use pico_sdk::{
 use pico_sdk::prelude::*;
 
 use crossbeam_channel::{unbounded, Sender, Receiver};
-use pico_sdk::common::{PicoExtraOperations, PicoIndexMode, PicoSigGenTrigSource, PicoSigGenTrigType,
-                       PicoSweepType, PicoWaveType};
+use pico_sdk::common::{PicoExtraOperations, PicoIndexMode, PicoSigGenTrigSource, PicoSigGenTrigType, PicoSweepType, PicoWaveType, SweepShotCount};
 
 use rustfft::{FftPlanner, num_complex::Complex};
 
@@ -103,17 +102,17 @@ impl PicoScopeApp {
 
     fn connect_to_scope_real(&mut self) {
         self.stream_device = Some(self.get_device());
-        self.reset_sig_gen_built_in();
+        self.reset_sig_gen_built_in().unwrap();
     }
 
-    fn reset_sig_gen_built_in(&mut self) {
+    fn reset_sig_gen_built_in(&mut self) -> PicoResult<()> {
         let stream_device = self.stream_device.as_ref().unwrap();
 
-        let (sweeps, shots) = match self.sig_gen.trigger_source {
-            PicoSigGenTrigSource::None => (0, 0),
+        let sweeps_shots = match self.sig_gen.trigger_source {
+            PicoSigGenTrigSource::None => SweepShotCount::None,
             _ => match self.sig_gen.sig {
-                SigGenEnum::Shot { .. } => (0, 1),
-                SigGenEnum::Sweep { .. } => (1, 0),
+                SigGenEnum::Shot { .. } => SweepShotCount::Shots(1),
+                SigGenEnum::Sweep { .. } => SweepShotCount::ContinuousSweeps,
             }
         };
 
@@ -125,22 +124,37 @@ impl PicoScopeApp {
             }
         };
 
+        // A shot with frequency 0 means a pulse of duration_secs time
+        let wave_type = match self.sig_gen.sig {
+            SigGenEnum::Sweep { .. } => {
+                PicoWaveType::Sine
+            },
+            SigGenEnum::Shot { freq_hz, .. } => {
+                if freq_hz == 0.0 {
+                    PicoWaveType::DCVoltage
+                } else {
+                    PicoWaveType::Sine
+                }
+            }
+        };
+
+        // TODO: add arbitrary
         //stream_device.set_sig_gen_arbitrary();
-        stream_device.set_sig_gen_built_in_v2(
-            0,
-            self.sig_gen.pk_to_pk_microvolt, // 2V pk-to-pk, so +-1V
-            PicoWaveType::Sine,
-            start_freq,
-            end_freq,
-            1.0,
-            dwell,
-            PicoSweepType::Up,
-            PicoExtraOperations::Off,
-            shots,
-            sweeps,
-            PicoSigGenTrigType::Rising,
-            self.sig_gen.trigger_source,
-            0);
+        let res = stream_device.set_sig_gen_built_in_v2(
+            self.sig_gen.offset_voltage_microvolt
+            , self.sig_gen.pk_to_pk_microvolt
+            , wave_type
+            , start_freq
+            , end_freq
+            , 1.0
+            , dwell
+            , PicoSweepType::Up
+            , PicoExtraOperations::Off
+            , sweeps_shots
+            , self.sig_gen.trigger_type
+            , self.sig_gen.trigger_source
+            , 0);
+
 
         stream_device.enable_channel(PicoChannel::A, PicoRange::X1_PROBE_2V, PicoCoupling::AC);
         stream_device.enable_channel(PicoChannel::B, PicoRange::X1_PROBE_1V, PicoCoupling::AC);
@@ -148,11 +162,14 @@ impl PicoScopeApp {
 
         stream_device.new_data.subscribe(self.handler.clone());
         stream_device.start(self.sampling_rate as u32).unwrap();
+
+        res
     }
 
     fn trigger(&self) {
         let stream_device = self.stream_device.as_ref().unwrap();
-        stream_device.sig_gen_start();
+        stream_device.sig_gen_software_control(1);
+        stream_device.sig_gen_software_control(0);
     }
 }
 
@@ -181,7 +198,9 @@ impl Default for SigGenEnum {
 #[derive(Clone)]
 struct SigGen {
     pk_to_pk_microvolt: u32,
+    offset_voltage_microvolt: i32,
     sig: SigGenEnum,
+    trigger_type: PicoSigGenTrigType,
     trigger_source: PicoSigGenTrigSource,
 }
 
@@ -189,7 +208,9 @@ impl Default for SigGen {
     fn default() -> Self {
         SigGen {
             pk_to_pk_microvolt: 2_000_000,
+            offset_voltage_microvolt: 0,
             sig: Default::default(),
+            trigger_type: PicoSigGenTrigType::Falling,
             trigger_source: PicoSigGenTrigSource::None,
         }
     }
@@ -354,7 +375,12 @@ impl epi::App for PicoScopeApp {
             // Signal generator
             ui.horizontal(|ui| {
                 if ui.button("Update").clicked() {
-                    self.reset_sig_gen_built_in();
+                    match self.reset_sig_gen_built_in() {
+                        Ok(_) => {},
+                        Err(err) => {
+                            ui.label(format!("{}", err));
+                        }
+                    }
                 }
                 ui.group(|ui| {
                     ui.horizontal(|ui| {
