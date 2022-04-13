@@ -4,10 +4,10 @@ use egui::*;
 use eframe::egui;
 use epi;
 use plot::{
-    Arrows, Bar, BarChart, BoxElem, BoxPlot, BoxSpread, CoordinatesFormatter, Corner, HLine,
-    Legend, Line, LineStyle, MarkerShape, Plot, PlotImage, Points, Polygon, Text, VLine, Value,
+    Legend, Line, MarkerShape, Plot, Points, Value,
     Values,
 };
+use itertools::Itertools;
 
 use pico_sdk::{
     download::{cache_resolution, download_drivers_to_cache},
@@ -16,10 +16,12 @@ use pico_sdk::{
 use pico_sdk::prelude::*;
 
 use crossbeam_channel::{unbounded, Sender, Receiver};
-use pico_sdk::common::{PicoExtraOperations, PicoIndexMode, PicoSigGenTrigSource, PicoSigGenTrigType, PicoSweepType, PicoWaveType, SweepShotCount};
+use pico_sdk::common::{
+    PicoExtraOperations, PicoSigGenTrigSource, PicoSigGenTrigType, PicoSweepType, PicoWaveType, SweepShotCount
+};
 
 use rustfft::{FftPlanner, num_complex::Complex};
-use pico_sdk::streaming::SetSigGenArbitraryProperties;
+use pico_sdk::streaming::{SetSigGenArbitraryProperties, SetSigGenArbitraryPhaseProperties};
 
 
 struct PicoScopeHandler {
@@ -46,16 +48,15 @@ enum SigGenType {
 
 #[derive(Clone)]
 enum SigGenEnum {
-    ShotPulse { duration_secs: f64 },
+    ShotPulse { duration_usecs: f64, frequency_pulse: f64 }, // frequency_pulse of 10 and duration_usecs of 25 means 25us pulse every 100 = 1000 / 10.0 ms
     SweepSine { start_hz: f64, end_hz: f64, duration_secs: f64 }
 }
 
 impl Default for SigGenEnum {
     fn default() -> Self {
-        SigGenEnum::SweepSine {
-            start_hz: 20_000.0,
-            end_hz: 40_000.0,
-            duration_secs: 1.0,
+        SigGenEnum::ShotPulse {
+            duration_usecs: 100.,
+            frequency_pulse: 1000.,
         }
     }
 }
@@ -72,7 +73,7 @@ struct SigGen {
 impl Default for SigGen {
     fn default() -> Self {
         SigGen {
-            pk_to_pk_microvolt: 2_000_000,
+            pk_to_pk_microvolt: 3_000_000,
             offset_voltage_microvolt: 0,
             sig: Default::default(),
             trigger_type: PicoSigGenTrigType::Falling,
@@ -91,14 +92,18 @@ struct StreamProperties {
 impl Default for StreamProperties {
     fn default() -> Self {
         StreamProperties {
-            sampling_rate: 100_000,
-            a_range: PicoRange::X1_PROBE_1V,
-            b_range: PicoRange::X1_PROBE_1V,
+            sampling_rate: 1_000_000,
+            a_range: PicoRange::X1_PROBE_5V,
+            b_range: PicoRange::X1_PROBE_5V,
         }
     }
 }
 
 trait AppScope {
+    fn stop(
+        &self,
+    );
+
     fn set_siggen(
         &self,
         props: SetSigGenBuiltInV2Properties,
@@ -113,6 +118,10 @@ trait AppScope {
         stream_props: StreamProperties,
     ) -> PicoResult<()>;
 
+    fn sig_gen_arbitrary_min_max_values(
+        &self,
+    ) -> PicoResult<SigGenArbitraryMinMaxValues>;
+
     fn trigger(&self);
 }
 
@@ -120,9 +129,15 @@ struct AppPicoScope {
     stream_device: PicoStreamingDevice,
 }
 
-struct AppSimulatedScope {}
+struct _AppSimulatedScope {}
 
 impl AppScope for AppPicoScope {
+    fn stop(
+        &self,
+    ) {
+        self.stream_device.stop();
+    }
+
     fn set_awg(
         &self,
         props: SetSigGenArbitraryProperties,
@@ -140,12 +155,14 @@ impl AppScope for AppPicoScope {
         ret
     }
 
+    fn sig_gen_arbitrary_min_max_values(&self) -> PicoResult<SigGenArbitraryMinMaxValues> {
+        self.stream_device.sig_gen_arbitrary_min_max_values()
+    }
+
     fn set_siggen(&self,
                   props: SetSigGenBuiltInV2Properties,
                   handler: Arc<PicoScopeHandler>,
                   stream_props: StreamProperties) -> PicoResult<()> {
-        // TODO: add arbitrary
-        //stream_device.set_sig_gen_arbitrary();
         let ret = self.stream_device.set_sig_gen_built_in_v2(
             props.offset_voltage,
             props.pk_to_pk,
@@ -212,7 +229,7 @@ impl AppPicoScope {
     }
 }
 
-impl AppSimulatedScope {
+impl _AppSimulatedScope {
     // fn new() -> Self {
     //
     // }
@@ -271,19 +288,30 @@ impl PicoScopeApp {
 
         let scope = self.stream_device.as_ref().unwrap();
 
+        scope.stop();
+
         let res = match self.sig_gen.sig {
-            SigGenEnum::ShotPulse { duration_secs } => {
+            SigGenEnum::ShotPulse { duration_usecs, frequency_pulse } => {
                 // AWG of a pulse wave - short duration up, long duration down
-                let samples_per_second = self.stream_props.sampling_rate;
-                let duration_samples = (duration_secs as f64 / samples_per_second as f64) as usize;
+                let dds_period_ns = 50.0;
+                let total_duration_ns = 1e9 / frequency_pulse;
+                // we want duration_usecs
+                let min_max = scope.sig_gen_arbitrary_min_max_values()?;
+                let max_size = min_max.max_size;
+                let max_value = min_max.max_value;
+                let single_sample_duration_ns = total_duration_ns / max_size as f64;
+                let up_time_ns = duration_usecs * 1e3;
+                println!("max awg allowed size: {} ; 1 sample period: {} = {} / {} (other: {:?}",
+                    max_size,
+                    single_sample_duration_ns, total_duration_ns, dds_period_ns,
+                    min_max);
+                let n = (up_time_ns / single_sample_duration_ns) as u32;
+                println!("using {} samples, {} up, {} 0", max_size, n, max_size - n);
                 let props = SetSigGenArbitraryProperties {
                     offset_voltage: 0,
-                    pk_to_pk: 200_000,
-                    start_delta_phase: 0,
-                    stop_delta_phase: 1_000,
-                    delta_phase_increment: 1,
-                    dwell_count: 0,
-                    arbitrary_waveform: (0..1000).map(|x| (if x > duration_samples { (2<<15) } else { 0 }) as i16).collect(),
+                    pk_to_pk: self.sig_gen.pk_to_pk_microvolt,
+                    phase_props: SetSigGenArbitraryPhaseProperties::FrequencyConstantHz(frequency_pulse),
+                    arbitrary_waveform: (0..max_size).map(|x| (if x < n { max_value } else { 0 }) as i16).collect(),
                     sweep_type: PicoSweepType::Up,
                     extra_operations: PicoExtraOperations::Off,
                     sweeps_shots,
@@ -329,6 +357,11 @@ impl PicoScopeApp {
     }
 }
 
+enum Trigger {
+    None,
+    Edge { val: i16, up: bool },
+}
+
 struct PicoScopeApp {
     num_points: u32,
     updates_per_second: f32,
@@ -342,8 +375,23 @@ struct PicoScopeApp {
 
     // UI State
     show_t_or_fft: PlotDisplay,
+    // how should we keep the state of the separate parameters for different modes?
+    // mode a: x, y
+    // mode b: z
+    // when switching, I need to keep x, y and z around. keep each separately? a lot of code duplication
+    start_hz: f64,
+    end_hz: f64,
+    sweep_duration_secs: f64,
+    shot_duration_usec: f64,
+    shot_frequency_hz: f64,
     sig_gen: SigGen,
     last_error: String,
+
+    // TODO: bad name ; this is not the picoscope trigger, this is the level to use
+    // for displaying the received wave ; we find the first instance where it matches
+    // and use that as the zero of the axes.
+    trigger: Trigger,
+    trigger_level: i16,
 }
 
 struct Channel {
@@ -368,6 +416,13 @@ impl Default for PicoScopeApp {
             show_t_or_fft: PlotDisplay::Time,
             sig_gen: Default::default(),
             last_error: "".into(),
+            sweep_duration_secs: 1.0,
+            shot_duration_usec: 25.0,
+            shot_frequency_hz: 100.0,
+            start_hz: 20_000.0,
+            end_hz: 20_000.0,
+            trigger: Trigger::Edge { val: 1000, up: true},
+            trigger_level: 0,
         }
     }
 }
@@ -385,51 +440,57 @@ impl epi::App for PicoScopeApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.ctx().request_repaint();
             // check for new data
-            match self.receiver.try_recv() {
-                Err(_) => {
-                    // ignore
-                },
-                Ok(data) => {
-                    for (pico_channel, c) in data.channels {
-                        match self.channels.get_mut(&pico_channel) {
-                            None => {
-                                let channel = Channel {
-                                    name: format!("{}", pico_channel),
-                                    multiplier: c.multiplier,
-                                    samples: c.samples.iter().map(|x| *x as f64).collect()
-                                };
-                                self.channels.insert(pico_channel, channel);
-                            },
-                            Some(channel) => {
-                                channel.multiplier = c.multiplier;
-                                channel.name = format!("{}", pico_channel);
-                                // append points up to self.num_points, truncate first to drop old ones
-                                // so we keep to the length
-                                // not the best way
-                                let n = c.samples.len();
-                                let n_existing = channel.samples.len();
-                                if n > self.num_points as usize {
-                                    // just take the new vector
-                                    let start = n - self.num_points as usize;
-                                    channel.samples = c.samples[start..].iter().map(|x| *x as f64).collect();
-                                } else if n + n_existing < self.num_points as usize {
-                                    // pure concatenation
-                                    channel.samples.extend(c.samples.iter().map(|x| *x as f64));
-                                } else {
-                                    // A
-                                    // =>
-                                    // A[n-kept..] + B
-                                    // total = num_points
-                                    let kept = (self.num_points as usize) - n;
-                                    channel.samples = channel.samples[(n_existing - kept)..]
-                                        .iter().map(|x| *x).chain(c.samples.iter().map(|x| *x as f64)).collect();
-    
+            let mut reads = 0;
+            loop {
+                match self.receiver.try_recv() {
+                    Err(_) => {
+                        break;
+                    },
+                    Ok(data) => {
+                        reads += 1;
+                        for (pico_channel, c) in data.channels {
+                            match self.channels.get_mut(&pico_channel) {
+                                None => {
+                                    let channel = Channel {
+                                        name: format!("{}", pico_channel),
+                                        multiplier: c.multiplier,
+                                        samples: c.samples.iter().map(|x| *x as f64).collect()
+                                    };
+                                    self.channels.insert(pico_channel, channel);
+                                },
+                                Some(channel) => {
+                                    channel.multiplier = c.multiplier;
+                                    channel.name = format!("{}", pico_channel);
+                                    // append points up to self.num_points, truncate first to drop old ones
+                                    // so we keep to the length
+                                    // not the best way
+                                    let n = c.samples.len();
+                                    let n_existing = channel.samples.len();
+                                    if n > self.num_points as usize {
+                                        // just take the new vector
+                                        let start = n - self.num_points as usize;
+                                        channel.samples = c.samples[start..].iter().map(|x| *x as f64).collect();
+                                    } else if n + n_existing < self.num_points as usize {
+                                        // pure concatenation
+                                        channel.samples.extend(c.samples.iter().map(|x| *x as f64));
+                                    } else {
+                                        // A
+                                        // =>
+                                        // A[n-kept..] + B
+                                        // total = num_points
+                                        let kept = (self.num_points as usize) - n;
+                                        channel.samples = channel.samples[(n_existing - kept)..]
+                                            .iter().map(|x| *x).chain(c.samples.iter().map(|x| *x as f64)).collect();
+        
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
+            let min = self.channels.iter().map(|(_k, v)| v.samples.iter().cloned().fold(0./0., f64::min)).fold(0./0., f64::min);
+            let max = self.channels.iter().map(|(_k, v)| v.samples.iter().cloned().fold(0./0., f64::max)).fold(0./0., f64::max);
             let now = ui.input().time;
             self.last_update_count += 1;
             let dt = now - self.last_update_start;
@@ -450,15 +511,17 @@ impl epi::App for PicoScopeApp {
 
             ui.horizontal(|ui| {
                 ui.group(|ui| {
-                    ui.add(egui::Label::new(format!("channels: {}", self.channels.len())));
+                    ui.add(egui::Label::new(format!("channels: {:2}; [{:06.0},{:06.0}]",
+                        self.channels.len(), min, max)));
                     ui.add(egui::Label::new({
                         let temp: Vec<String> = self.channels
                             .iter()
-                            .map(|(_pico_channel, c)| format!("{}-x{}", c.name, c.multiplier)).collect();
+                            .map(|(_pico_channel, c)| format!("{}-x{:01.9}", c.name, c.multiplier)).collect();
                         temp.join(" ")
                     }));
+
                     let mut sampling_rate = self.stream_props.sampling_rate;
-                    egui::ComboBox::from_label("Sampling rate")
+                    egui::ComboBox::from_label("Sample")
                         .selected_text(format!("{:?}", sampling_rate))
                         .show_ui(ui, |ui| {
                             ui.selectable_value(&mut sampling_rate, 100_000, "0.1 Msps");
@@ -466,6 +529,28 @@ impl epi::App for PicoScopeApp {
                             ui.selectable_value(&mut sampling_rate, 2_000_000, "2 Msps");
                         }
                     );
+
+                    let mut trigger = match self.trigger {
+                        Trigger::None => false,
+                        _ => true,
+                    };
+                    ui.checkbox(&mut trigger, "Trigger");
+                    if trigger {
+                        ui.add(egui::Slider::new(&mut self.trigger_level, -32768..=32767).text("Level"));
+                        self.trigger = Trigger::Edge { val: self.trigger_level, up: true };
+                    } else {
+                        self.trigger = Trigger::None;
+                    }
+
+                    let mut pk_to_pk_microvolt = self.sig_gen.pk_to_pk_microvolt;
+                    egui::ComboBox::from_label("Sig Gen microvolts")
+                        .selected_text(format!("{:?}", pk_to_pk_microvolt))
+                        .show_ui(ui, |ui| {
+                            for v in [1_000_000, 2_000_000, 3_000_000] {
+                                ui.selectable_value(&mut pk_to_pk_microvolt, v, format!("{}", v));
+                            };
+                        });
+                    self.sig_gen.pk_to_pk_microvolt = pk_to_pk_microvolt;
                     self.stream_props.sampling_rate = sampling_rate;
                     ui.checkbox(&mut show_t, "FFT");
                 });
@@ -477,7 +562,7 @@ impl epi::App for PicoScopeApp {
                 };
 
                 ui.group(|ui| {
-                    ui.add(egui::Label::new(format!("updates per second: {}", self.updates_per_second)));
+                    ui.add(egui::Label::new(format!("fps: {:2.1}", self.updates_per_second)));
                     ui.add(egui::Slider::new(&mut self.num_points, 50..=100000).text("Points"));
                     ui.add(egui::DragValue::new(&mut self.num_points)
                         .speed((num_points as f64).max(2.0).log2())
@@ -492,13 +577,16 @@ impl epi::App for PicoScopeApp {
 
             // Signal generator
             ui.horizontal(|ui| {
+                if ui.button("Stop").clicked() {
+                    self.stream_device.as_ref().unwrap().stop();
+                }
                 if ui.button("Update").clicked() {
                     self.last_error = match self.reset_sig_gen_built_in() {
                         Ok(_) => {
                             "".into()
                         },
                         Err(err) => {
-                            format!("reset_sig_gen_built_in: {}", err)
+                            format!("reset_sig_gen_built_in: {}: status = {}", err, err.status)
                         }
                     };
                 }
@@ -527,29 +615,29 @@ impl epi::App for PicoScopeApp {
                     });
                 });
                 // Now recreate siggen.sig from sig_gen_type if they were switched
-                let (start_freq, end_freq, duration) =
-                    match self.sig_gen.sig {
-                        SigGenEnum::ShotPulse { duration_secs } => (0.0, 0.0, duration_secs),
-                        SigGenEnum::SweepSine { start_hz, end_hz, duration_secs } => (start_hz, end_hz, duration_secs),
-                    };
-
                 self.sig_gen.sig = match &self.sig_gen.sig {
                     SigGenEnum::ShotPulse { .. } => match sig_gen_type {
-                        SigGenType::SweepSine => SigGenEnum::SweepSine { start_hz: start_freq, end_hz: end_freq, duration_secs: duration },
+                        SigGenType::SweepSine => SigGenEnum::SweepSine {
+                            start_hz: self.start_hz, end_hz: self.end_hz, duration_secs: self.sweep_duration_secs },
                         _ => self.sig_gen.sig.clone(),
                     },
                     SigGenEnum::SweepSine { ..} => match sig_gen_type {
-                        SigGenType::ShotPulse => SigGenEnum::ShotPulse { duration_secs: duration },
+                        SigGenType::ShotPulse => SigGenEnum::ShotPulse {
+                            duration_usecs: self.shot_duration_usec,
+                            frequency_pulse: self.shot_frequency_hz,
+                        },
                         _ => self.sig_gen.sig.clone(),
                     }
                 };
                 match &mut self.sig_gen.sig {
-                    SigGenEnum::ShotPulse { ref mut duration_secs } => {
+                    SigGenEnum::ShotPulse { ref mut duration_usecs, ref mut frequency_pulse } => {
                         ui.group(|ui| {
-                            let mut duration_micros: u32 = (*duration_secs * 1000000.0) as u32;
-                            ui.add(egui::Label::new(format!("Duration [µs]: {}", (*duration_secs * 1000000.0) as u32)));
-                            ui.add(egui::Slider::new(&mut duration_micros, 1..=100).text("µs"));
-                            *duration_secs = duration_micros as f64 / 1000000.0;
+                            ui.add(egui::Label::new(format!("Duration [µs]: {}", self.shot_duration_usec)));
+                            ui.add(egui::Slider::new(&mut self.shot_duration_usec, 1.0..=100.0).integer().text("µs"));
+                            *duration_usecs = self.shot_duration_usec;
+                            ui.add(egui::Label::new(format!("Frequency [Hz]: {:4.0}", self.shot_frequency_hz)));
+                            ui.add(egui::Slider::new(&mut self.shot_frequency_hz, 10.0..=1000.0).integer().text("Hz"));
+                            *frequency_pulse = self.shot_frequency_hz;
                         });
                     },
                     SigGenEnum::SweepSine { ref mut start_hz, ref mut end_hz, .. } => {
@@ -566,6 +654,9 @@ impl epi::App for PicoScopeApp {
                             ui.add(egui::Label::new(format!("End Freq: {:.0}", end_hz)));
                             ui.add(egui::Slider::new(&mut end_hz_slider, start_hz_slider..=100_000.0).integer().text("Hz"));
                         });
+                        // ui.group(|ui| {
+
+                        // })
                         *start_hz = start_hz_slider;
                         *end_hz = end_hz_slider;
                     }
@@ -592,11 +683,31 @@ impl epi::App for PicoScopeApp {
                         //plot_ui.points(markers)    
                         match self.show_t_or_fft {
                             PlotDisplay::Time => {
-                                let values = Values::from_values(
-                                    channel.samples.iter().enumerate().map(|(i, v)| Value {
-                                        x: i as f64,
-                                        y: *v,
-                                    }).collect());
+                                let samples_it = channel.samples.iter();
+                                let values = match self.trigger {
+                                    Trigger::None => Values::from_values(samples_it.enumerate().map(|(i, v)| Value {
+                                            x: i as f64,
+                                            y: *v,
+                                        }).collect()),
+                                    Trigger::Edge { val, up } =>
+                                        Values::from_values({
+                                            let mut base: Vec<Value> = samples_it.tuple_windows()  
+                                                .skip_while(|(x_0, x_1)| {
+                                                    ((up && (**x_0 > **x_1)) && (!up && (**x_0 < **x_1)))
+                                                        || (**x_1 < (val as f64))
+                                                })
+                                                .enumerate()
+                                                .map(|(i, v)| Value {
+                                                    x: i as f64,
+                                                    y: *v.1,
+                                                }).collect();
+                                            base.extend((base.len()..channel.samples.len()).map(|i| Value {
+                                                x: i as f64,
+                                                y: 0.0,
+                                            }));
+                                            base
+                                        })
+                                };
                                 //let markers = Points::new(values).shape(MarkerShape::Circle);
                                 let line = Line::new(values);
                                 plot_ui.line(line);
