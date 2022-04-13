@@ -679,35 +679,33 @@ impl epi::App for PicoScopeApp {
                         ;
                     plot_ui.points(markers)
                 } else {
+                    let start_index = match self.trigger {
+                        Trigger::None => 0,
+                        Trigger::Edge {val, up} => {
+                            self.channels.iter().map(|(_k, c)|
+                                c.samples
+                                    .iter()
+                                    .tuple_windows()
+                                    .enumerate()
+                                    .skip_while(|(_i, (x_0, x_1))|
+                                        // in wrong direction
+                                        ((up && (**x_0 > **x_1)) && (!up && (**x_0 < **x_1)))
+                                        // below the level
+                                        || (**x_1 < (val as f64))
+                                    )
+                                    .map(|(i, (_x_0, _x_1))| i)
+                                    .nth(0)
+                            ).min().unwrap_or(Some(0)).unwrap_or(0)
+                        }
+                    };
                     for (_pico_channel, channel) in &self.channels {
-                        //plot_ui.points(markers)    
                         match self.show_t_or_fft {
                             PlotDisplay::Time => {
-                                let samples_it = channel.samples.iter();
-                                let values = match self.trigger {
-                                    Trigger::None => Values::from_values(samples_it.enumerate().map(|(i, v)| Value {
-                                            x: i as f64,
-                                            y: *v,
-                                        }).collect()),
-                                    Trigger::Edge { val, up } =>
-                                        Values::from_values({
-                                            let mut base: Vec<Value> = samples_it.tuple_windows()  
-                                                .skip_while(|(x_0, x_1)| {
-                                                    ((up && (**x_0 > **x_1)) && (!up && (**x_0 < **x_1)))
-                                                        || (**x_1 < (val as f64))
-                                                })
-                                                .enumerate()
-                                                .map(|(i, v)| Value {
-                                                    x: i as f64,
-                                                    y: *v.1,
-                                                }).collect();
-                                            base.extend((base.len()..channel.samples.len()).map(|i| Value {
-                                                x: i as f64,
-                                                y: 0.0,
-                                            }));
-                                            base
-                                        })
-                                };
+                                let samples_it = channel.samples.iter().skip(start_index);
+                                let values = Values::from_values(samples_it.enumerate().map(|(i, v)| Value {
+                                    x: i as f64,
+                                    y: *v,
+                                }).collect());
                                 //let markers = Points::new(values).shape(MarkerShape::Circle);
                                 let line = Line::new(values);
                                 plot_ui.line(line);
