@@ -392,6 +392,8 @@ struct PicoScopeApp {
     // and use that as the zero of the axes.
     trigger: Trigger,
     trigger_level: i16,
+
+    mix: bool,
 }
 
 struct Channel {
@@ -423,6 +425,7 @@ impl Default for PicoScopeApp {
             end_hz: 20_000.0,
             trigger: Trigger::Edge { val: 1000, up: true},
             trigger_level: 0,
+            mix: false,
         }
     }
 }
@@ -553,6 +556,7 @@ impl epi::App for PicoScopeApp {
                     self.sig_gen.pk_to_pk_microvolt = pk_to_pk_microvolt;
                     self.stream_props.sampling_rate = sampling_rate;
                     ui.checkbox(&mut show_t, "FFT");
+                    ui.checkbox(&mut self.mix, "Mix");
                 });
 
                 self.show_t_or_fft = if show_t {
@@ -590,12 +594,12 @@ impl epi::App for PicoScopeApp {
                         }
                     };
                 }
-                ui.group(|ui| {
-                    ui.horizontal(|ui| {
-                        ui.radio_value(&mut self.sig_gen.trigger_source, PicoSigGenTrigSource::None, "No trigger");
-                        ui.radio_value(&mut self.sig_gen.trigger_source, PicoSigGenTrigSource::None, "Software (BROKEN)"); // SoftTrig - but not working ; just use AWG for now
-                    });
-                });
+                // ui.group(|ui| {
+                //     ui.horizontal(|ui| {
+                //         ui.radio_value(&mut self.sig_gen.trigger_source, PicoSigGenTrigSource::None, "No trigger");
+                //         ui.radio_value(&mut self.sig_gen.trigger_source, PicoSigGenTrigSource::None, "Software (BROKEN)"); // SoftTrig - but not working ; just use AWG for now
+                //     });
+                // });
                 match self.sig_gen.trigger_source {
                     PicoSigGenTrigSource::SoftTrig => {
                         if ui.button("Trigger").clicked() {
@@ -701,32 +705,24 @@ impl epi::App for PicoScopeApp {
                     for (_pico_channel, channel) in &self.channels {
                         match self.show_t_or_fft {
                             PlotDisplay::Time => {
-                                let samples_it = channel.samples.iter().skip(start_index);
-                                let values = Values::from_values(samples_it.enumerate().map(|(i, v)| Value {
-                                    x: i as f64,
-                                    y: *v,
-                                }).collect());
-                                //let markers = Points::new(values).shape(MarkerShape::Circle);
-                                let line = Line::new(values);
-                                plot_ui.line(line);
+                                plot_ui.line(time_line(&channel.name, &channel.samples, start_index));
                             },
                             PlotDisplay::FFT => {
-                                // plot fft - half the range, since it is real, so symmetric
-                                let mut planner = FftPlanner::new();
-                                let n = channel.samples.len();
-                                let fft = planner.plan_fft_forward(n);
-                                let mut buffer: Vec<_> = channel.samples.iter().map(|v| Complex::new(*v, 0.0)).collect();
-                                fft.process(&mut buffer);
-                                let dt = 1e-6;
-                                let df = 1.0 / dt / (n as f64);
-                                let values = Values::from_values(
-                                    buffer.iter().take(n / 2).enumerate().map(|(i, v)| Value {
-                                        x: i as f64 * df,
-                                        y: (v.re * v.re + v.im * v.im).sqrt(),
-                                    }).collect());
-                                //let markers = Points::new(values).shape(MarkerShape::Circle);
-                                let line = Line::new(values);
-                                plot_ui.line(line);
+                                plot_ui.line(fft_line(&channel.name, &channel.samples));
+                            }
+                        }
+                    }
+                    // mix fft
+                    if self.channels.len() >= 2 && self.mix {
+                        let a = self.channels.iter().nth(0).unwrap().1;
+                        let b = self.channels.iter().nth(1).unwrap().1;
+                        let ab: Vec<f64> = a.samples.iter().zip(b.samples.iter()).map(|(x, y)| *x * *y).collect();
+                        match self.show_t_or_fft {
+                            PlotDisplay::Time => {
+                                plot_ui.line(time_line(&"Mix", &ab, start_index));
+                            },
+                            PlotDisplay::FFT => {
+                                plot_ui.line(fft_line(&"Mix", &ab));
                             }
                         }
                     }
@@ -735,6 +731,36 @@ impl epi::App for PicoScopeApp {
         });
         frame.set_window_size(ctx.used_size());
     }
+}
+
+fn fft_line(name: &str, samples: &Vec<f64>) -> Line {
+    // plot fft - half the range, since it is real, so symmetric
+    let mut planner = FftPlanner::new();
+    let n = samples.len();
+    let fft = planner.plan_fft_forward(n);
+    let mut buffer: Vec<_> = samples.iter().map(|v| Complex::new(*v, 0.0)).collect();
+    fft.process(&mut buffer);
+    let buffer: Vec<f64> = buffer.iter().take(n / 2).map(|v| (v.re * v.re + v.im * v.im).sqrt()).collect();
+    let max = buffer.iter().cloned().fold(0./0., f64::max);
+    let dt = 1e-6;
+    let df = 1.0 / dt / (n as f64);
+    let values = Values::from_values(
+        buffer.iter().enumerate().map(|(i, v)| Value {
+            x: i as f64 * df,
+            y: *v / max,
+        }).collect());
+    //let markers = Points::new(values).shape(MarkerShape::Circle);
+    Line::new(values).name(name)
+}
+
+fn time_line(name: &str, samples: &Vec<f64>, start_index: usize) -> Line {
+    let samples_it = samples.iter().skip(start_index);
+    let values = Values::from_values(samples_it.enumerate().map(|(i, v)| Value {
+        x: i as f64,
+        y: *v,
+    }).collect());
+    //let markers = Points::new(values).shape(MarkerShape::Circle);
+    Line::new(values).name(name)
 }
 
 fn main() {
